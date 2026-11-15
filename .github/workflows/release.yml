@@ -24,6 +24,7 @@ concurrency:
 jobs:
   check:
     runs-on: ubuntu-latest
+    timeout-minutes: 5
     outputs:
       version: ${{ steps.v.outputs.version }}
       release: ${{ steps.v.outputs.release }}
@@ -48,13 +49,11 @@ jobs:
     needs: check
     if: needs.check.outputs.release == 'true'
     runs-on: windows-latest
+    timeout-minutes: 40
     env:
       GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
       VER: ${{ needs.check.outputs.version }}
       TAG: v${{ needs.check.outputs.version }}
-    defaults:
-      run:
-        shell: bash
     steps:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
       - uses: actions/setup-node@949feb2413d6458794dcd2491c4babbbce0c15c1 # v7.1.0
@@ -69,6 +68,7 @@ jobs:
       - run: node scripts/release-notes.mjs
 
       - name: Tag this commit
+        shell: bash
         run: |
           remote="$(git ls-remote --tags origin "refs/tags/$TAG" | cut -f1)"
           if [ -z "$remote" ]; then
@@ -82,6 +82,7 @@ jobs:
           fi
 
       - name: Create the draft release
+        shell: bash
         run: |
           if ! gh release view "$TAG" --json isDraft > /dev/null 2>&1; then
             gh release create "$TAG" --draft --verify-tag --title "$VER" --notes-file build/release-notes.md
@@ -91,6 +92,7 @@ jobs:
         run: npm run release:win
 
       - name: Check the files and publish
+        shell: bash
         run: |
           assets="$(gh release view "$TAG" --json assets --jq '.assets[].name')"
           for f in latest.yml "TunnelBrowser-Setup-$VER-x64.exe" "TunnelBrowser-Setup-$VER-x64.exe.blockmap"; do
@@ -99,6 +101,7 @@ jobs:
           gh release edit "$TAG" --draft=false --latest
 
       - name: Check that installed apps will find this update
+        shell: bash
         run: |
           sleep 5
           curl -fsSL "https://github.com/$GITHUB_REPOSITORY/releases/download/$TAG/latest.yml" | tee latest.yml

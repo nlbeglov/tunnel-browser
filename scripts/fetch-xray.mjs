@@ -27,6 +27,27 @@ const ASSETS = {
 const OS_NAME = { win32: 'win', darwin: 'mac', linux: 'linux' };
 export const CORE_NAME = 'tunnel-browser-core';
 
+/**
+ * Unzips with the system's own tools. On Windows, call the built-in bsdtar by full path:
+ * a bare "tar" from Git Bash is GNU tar, which reads "C:\..." as host "C" and hangs trying
+ * to reach it. PowerShell is the fallback for Windows builds without tar.exe.
+ */
+function extractZip(zip, dest) {
+  const opts = { stdio: 'inherit', timeout: 120_000, windowsHide: true };
+  if (process.platform === 'win32') {
+    const bsdtar = join(process.env.SystemRoot ?? 'C:\\Windows', 'System32', 'tar.exe');
+    if (existsSync(bsdtar)) return execFileSync(bsdtar, ['-xf', zip, '-C', dest], opts);
+    const q = (p) => `'${p.replace(/'/g, "''")}'`; // PowerShell single-quoted literal
+    return execFileSync(
+      'powershell.exe',
+      ['-NoProfile', '-NonInteractive', '-Command', `Expand-Archive -LiteralPath ${q(zip)} -DestinationPath ${q(dest)} -Force`],
+      opts,
+    );
+  }
+  if (process.platform === 'darwin') return execFileSync('/usr/bin/tar', ['-xf', zip, '-C', dest], opts);
+  return execFileSync('unzip', ['-q', zip, '-d', dest], opts);
+}
+
 function arg(name, fallback) {
   const i = process.argv.indexOf(`--${name}`);
   return i >= 0 ? process.argv[i + 1] : fallback;
@@ -72,9 +93,7 @@ rmSync(work, { recursive: true, force: true });
 mkdirSync(work, { recursive: true });
 const zipPath = join(work, asset.file);
 writeFileSync(zipPath, buf);
-// bsdtar (Windows 10+, macOS) understands zip; on Linux use unzip.
-if (process.platform === 'linux') execFileSync('unzip', ['-q', zipPath, '-d', work]);
-else execFileSync('tar', ['-xf', zipPath, '-C', work]);
+extractZip(zipPath, work);
 
 rmSync(outDir, { recursive: true, force: true });
 mkdirSync(outDir, { recursive: true });
