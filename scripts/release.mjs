@@ -1,11 +1,12 @@
 // Cuts a release:
-//   npm run release -- patch | minor | major | 1.2.3   [--no-push]
+//   npm run release -- patch | minor | major | 1.2.3   [--push]
 //
 // 1. checks the working tree is clean and you are on main;
 // 2. moves the "Не выпущено" section of CHANGELOG.md under the new version;
 // 3. bumps package.json, commits "release: vX.Y.Z" and tags vX.Y.Z;
-// 4. pushes the commit and the tag. GitHub Actions then builds the installer and
-//    publishes the release; installed apps offer the update with one button.
+// 4. you push (GitHub Desktop: "Push origin" sends the commit and the tag together;
+//    or pass --push to push from this terminal). GitHub Actions then builds the
+//    installer and publishes the release; installed apps offer a one-click update.
 
 import { execFileSync } from 'node:child_process';
 import { readFileSync, writeFileSync } from 'node:fs';
@@ -20,7 +21,7 @@ const fail = (msg) => {
 };
 
 const bump = process.argv[2];
-const push = !process.argv.includes('--no-push');
+const push = process.argv.includes('--push');
 if (!bump) fail('укажите: patch, minor, major или номер версии (например 1.2.0)');
 
 if (git('status', '--porcelain')) fail('есть незакоммиченные изменения — сначала закоммитьте их');
@@ -66,5 +67,6 @@ if (push) {
   git('push', 'origin', 'main', '--follow-tags');
   console.log('✔ отправлено на GitHub — сборка релиза запустится автоматически (вкладка Actions)');
 } else {
-  console.log('Чтобы опубликовать: git push origin main --follow-tags');
+  console.log('Чтобы опубликовать: GitHub Desktop → «Push origin» (коммит и тег уйдут вместе)');
+  console.log('или из терминала: git push origin main --follow-tags');
 }

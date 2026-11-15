@@ -71,9 +71,11 @@ npm run dist:win       # собрать установщик Windows в dist/ (�
    ```bash
    npm run release -- patch      # или minor / major / 1.2.0
    ```
-   Скрипт переносит раздел под новую версию, поднимает версию в `package.json`, делает коммит и
-   тег и отправляет их на GitHub.
-3. GitHub Actions (`.github/workflows/release.yml`) прогоняет тесты, собирает установщик и публикует
+   Скрипт переносит раздел под новую версию, поднимает версию в `package.json`, делает коммит
+   `release: vX.Y.Z` и тег `vX.Y.Z`.
+3. Нажмите **Push origin** в GitHub Desktop: коммит и тег уйдут вместе
+   (или `npm run release -- patch --push`, если git в терминале авторизован на GitHub).
+4. GitHub Actions (`.github/workflows/release.yml`) прогоняет тесты, собирает установщик и публикует
    релиз. Через несколько минут у пользователей появится кнопка «Обновить».
 
 ### Требования к репозиторию
