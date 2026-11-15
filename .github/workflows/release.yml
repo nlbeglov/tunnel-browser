@@ -1,21 +1,53 @@
-# Pushing a tag vX.Y.Z (npm run release does it) builds the Windows installer and
-# publishes it as a GitHub Release. Installed apps see it and offer a one-click update.
+# Releases are driven by the version in package.json, so no tags need to be pushed by hand
+# (GitHub Desktop only pushes tags it created itself).
+#
+# On every push to main that touches package.json: if there is no GitHub Release for that
+# version yet, run the tests on Windows, tag the commit vX.Y.Z, build the installer and
+# publish the release. Installed apps then offer a one-click update.
+# The same run can be started by hand: Actions → Release → Run workflow.
 name: Release
 
 on:
   push:
-    tags: ['v*.*.*']
+    branches: [main]
+    paths: ['package.json', '.github/workflows/release.yml']
+  workflow_dispatch:
 
 permissions:
   contents: write
 
 concurrency:
-  group: release-${{ github.ref }}
+  group: release
   cancel-in-progress: false
 
 jobs:
+  check:
+    runs-on: ubuntu-latest
+    outputs:
+      version: ${{ steps.v.outputs.version }}
+      release: ${{ steps.v.outputs.release }}
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+      - id: v
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+        run: |
+          v="$(node -p "require('./package.json').version")"
+          echo "version=$v" >> "$GITHUB_OUTPUT"
+          if gh release view "v$v" --repo "$GITHUB_REPOSITORY" > /dev/null 2>&1; then
+            echo "Версия $v уже выпущена — новый релиз не нужен."
+            echo "release=false" >> "$GITHUB_OUTPUT"
+          else
+            echo "Версии $v ещё нет в релизах — выпускаем."
+            echo "release=true" >> "$GITHUB_OUTPUT"
+          fi
+
   windows:
+    needs: check
+    if: needs.check.outputs.release == 'true'
     runs-on: windows-latest
+    env:
+      GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
     steps:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
       - uses: actions/setup-node@949feb2413d6458794dcd2491c4babbbce0c15c1 # v7.1.0
@@ -23,22 +55,22 @@ jobs:
           node-version: 24
           cache: npm
 
-      - name: Tag must match package.json version
-        shell: bash
-        run: |
-          v="v$(node -p "require('./package.json').version")"
-          if [ "$v" != "$GITHUB_REF_NAME" ]; then
-            echo "::error::Тег $GITHUB_REF_NAME не совпадает с версией в package.json ($v)"
-            exit 1
-          fi
-
       - run: npm ci
       - run: npm run fetch-xray
       - run: npm run typecheck
       - run: npm test
       - run: node scripts/release-notes.mjs
 
+      - name: Tag this commit v${{ needs.check.outputs.version }}
+        shell: bash
+        run: |
+          tag="v${{ needs.check.outputs.version }}"
+          if git ls-remote --exit-code --tags origin "refs/tags/$tag" > /dev/null; then
+            echo "Тег $tag уже есть на GitHub"
+          else
+            git tag "$tag" "$GITHUB_SHA"
+            git push origin "refs/tags/$tag"
+          fi
+
       - name: Build and publish the installer
         run: npm run release:win
-        env:
-          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}

@@ -3,10 +3,10 @@
 //
 // 1. checks the working tree is clean and you are on main;
 // 2. moves the "Не выпущено" section of CHANGELOG.md under the new version;
-// 3. bumps package.json, commits "release: vX.Y.Z" and tags vX.Y.Z;
-// 4. you push (GitHub Desktop: "Push origin" sends the commit and the tag together;
-//    or pass --push to push from this terminal). GitHub Actions then builds the
-//    installer and publishes the release; installed apps offer a one-click update.
+// 3. bumps package.json and commits "release: vX.Y.Z";
+// 4. you push the commit (GitHub Desktop: "Push origin"; or pass --push to push from this
+//    terminal). GitHub Actions sees a version with no release yet, runs the tests, tags
+//    the commit vX.Y.Z, builds the installer and publishes the release.
 
 import { execFileSync } from 'node:child_process';
 import { readFileSync, writeFileSync } from 'node:fs';
@@ -34,7 +34,12 @@ const [ma, mi, pa] = pkg.version.split('.').map(Number);
 const next =
   bump === 'major' ? `${ma + 1}.0.0` : bump === 'minor' ? `${ma}.${mi + 1}.0` : bump === 'patch' ? `${ma}.${mi}.${pa + 1}` : bump;
 if (!/^\d+\.\d+\.\d+$/.test(next)) fail(`некорректная версия: ${next}`);
-if (git('tag', '--list', `v${next}`)) fail(`тег v${next} уже существует`);
+try {
+  git('fetch', '--tags', '--quiet', 'origin');
+} catch {
+  /* offline: rely on local tags */
+}
+if (git('tag', '--list', `v${next}`)) fail(`версия ${next} уже выпущена (есть тег v${next})`);
 
 const clPath = join(root, 'CHANGELOG.md');
 const changelog = readFileSync(clPath, 'utf8');
@@ -60,13 +65,12 @@ execFileSync('npm', ['install', '--package-lock-only', '--ignore-scripts', '--no
 
 git('add', 'CHANGELOG.md', 'package.json', 'package-lock.json');
 git('commit', '-m', `release: v${next}`);
-git('tag', '-a', `v${next}`, '-m', `v${next}`);
-console.log(`✔ версия ${next}: коммит и тег v${next} созданы`);
+console.log(`✔ версия ${next}: коммит «release: v${next}» создан`);
 
 if (push) {
-  git('push', 'origin', 'main', '--follow-tags');
-  console.log('✔ отправлено на GitHub — сборка релиза запустится автоматически (вкладка Actions)');
+  git('push', 'origin', 'main');
+  console.log('✔ отправлено на GitHub — релиз соберётся автоматически (вкладка Actions → Release)');
 } else {
-  console.log('Чтобы опубликовать: GitHub Desktop → «Push origin» (коммит и тег уйдут вместе)');
-  console.log('или из терминала: git push origin main --follow-tags');
+  console.log('Чтобы выпустить: GitHub Desktop → «Push origin».');
+  console.log('GitHub Actions прогонит тесты, поставит тег и опубликует релиз (вкладка Actions → Release).');
 }
