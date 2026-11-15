@@ -1,6 +1,8 @@
 import { useCallback, useEffect, useLayoutEffect, useRef, useState, type FormEvent, type KeyboardEvent } from 'react';
 import type {
-  BridgeApi,
+  BookmarksState,
+  BrowserSettings,
+  PanelName,
   ProfilesState,
   ReleaseEntry,
   TabInfo,
@@ -8,74 +10,69 @@ import type {
   TunnelState,
   UpdateState,
 } from '../shared/types';
-import { flag, hostOf, profileLine, usageLine } from './format';
+import { BookmarkStar, BookmarkTiles, BookmarksBar, BookmarksPanel } from './bookmarks';
+import { LetterIcon, api, errText, useBridge, type Run } from './bridge';
+import { flag, profileLine, usageLine } from './format';
 import * as I from './icons';
 
-declare global {
-  interface Window {
-    api: BridgeApi;
-  }
-}
-const api = window.api;
-
-function useBridge<T>(initial: T, get: () => Promise<T>, onChange: (cb: (v: T) => void) => () => void): T {
-  const [v, setV] = useState<T>(initial);
-  useEffect(() => {
-    let live = true;
-    void get().then((x) => live && setV(x));
-    const off = onChange(setV);
-    return () => {
-      live = false;
-      off();
-    };
-  }, []);
-  return v;
-}
-
-function errText(e: unknown): string {
-  const m = e instanceof Error ? e.message : String(e);
-  return m.replace(/^Error invoking remote method '[^']+': (Error: )?/, '');
-}
-
-type Panel = null | 'servers' | 'settings';
+type Panel = null | PanelName;
+const isMac = api.app.platform === 'darwin';
 
 export function App() {
   const tunnel = useBridge<TunnelState>({ status: 'disconnected' }, api.tunnel.get, api.tunnel.onChange);
-  const tabs = useBridge<TabsState>({ tabs: [], activeId: null }, api.tabs.get, api.tabs.onChange);
+  const tabs = useBridge<TabsState>({ tabs: [], activeId: null, canReopen: false }, api.tabs.get, api.tabs.onChange);
   const profiles = useBridge<ProfilesState>({ profiles: [], subscriptions: [] }, api.profiles.get, api.profiles.onChange);
   const update = useBridge<UpdateState>({ status: 'idle', currentVersion: '' }, api.updates.get, api.updates.onChange);
+  const bookmarks = useBridge<BookmarksState>({ items: [], showBar: true }, api.bookmarks.get, api.bookmarks.onChange);
   const [panel, setPanel] = useState<Panel>(null);
+  const [editBookmark, setEditBookmark] = useState<string | undefined>();
   const [toast, setToast] = useState<string | null>(null);
+  const [fullScreen, setFullScreen] = useState(false);
 
   const locked = tunnel.status !== 'connected' && tunnel.status !== 'degraded';
   const active = tabs.tabs.find((t) => t.id === tabs.activeId) ?? null;
 
   useEffect(() => {
-    if (!toast) return;
+    if (!toast || toast.length > 120) return; // long messages (storage problems) stay until closed
     const t = setTimeout(() => setToast(null), 5000);
     return () => clearTimeout(t);
   }, [toast]);
+  useEffect(
+    () =>
+      api.app.onOpenPanel((p, id) => {
+        setPanel(p);
+        setEditBookmark(id);
+      }),
+    [],
+  );
+  useEffect(() => api.app.onFullScreen(setFullScreen), []);
+  useEffect(() => api.app.onError(setToast), []);
 
-  const run = useCallback(async (fn: () => Promise<unknown>) => {
+  const run = useCallback<Run>(async (fn) => {
     try {
       await fn();
     } catch (e) {
       setToast(errText(e));
     }
   }, []);
+  const togglePanel = (p: PanelName) => {
+    setEditBookmark(undefined);
+    setPanel(panel === p ? null : p);
+  };
 
   return (
-    <div className="app">
+    <div className={`app ${isMac ? 'mac' : ''} ${fullScreen ? 'fullscreen' : ''}`}>
       <TabStrip tabs={tabs} onToast={setToast} />
       <Toolbar
         tab={active}
         locked={locked}
         tunnel={tunnel}
-        panel={panel}
-        setPanel={setPanel}
+        bookmarks={bookmarks}
+        togglePanel={togglePanel}
         run={run}
         updateReady={update.status === 'available'}
       />
+      {bookmarks.showBar && !locked && <BookmarksBar bookmarks={bookmarks} run={run} />}
       <UpdateBanner update={update} run={run} />
       {tunnel.status === 'degraded' && (
         <div className="banner warn">
@@ -97,8 +94,9 @@ export function App() {
         </div>
       )}
       <div className="body">
-        <Content tab={active} tunnel={tunnel} locked={locked} profiles={profiles} run={run} openServers={() => setPanel('servers')} />
+        <Content tab={active} tunnel={tunnel} locked={locked} profiles={profiles} bookmarks={bookmarks} run={run} openServers={() => setPanel('servers')} />
         {panel === 'servers' && <ServersPanel profiles={profiles} tunnel={tunnel} run={run} onClose={() => setPanel(null)} />}
+        {panel === 'bookmarks' && <BookmarksPanel bookmarks={bookmarks} editId={editBookmark} run={run} onClose={() => setPanel(null)} />}
         {panel === 'settings' && <SettingsPanel update={update} run={run} onClose={() => setPanel(null)} />}
       </div>
     </div>
@@ -109,29 +107,59 @@ export function App() {
 
 function Favicon({ tab }: { tab: TabInfo }) {
   if (tab.loading) return <span className="spinner" />;
-  const host = hostOf(tab.url);
-  const letter = (host[0] ?? '•').toUpperCase();
-  let hue = 0;
-  for (const ch of host) hue = (hue * 31 + ch.charCodeAt(0)) % 360;
-  return (
-    <span className="favicon" ref={(el) => el?.style.setProperty('--hue', String(hue))}>
-      {letter}
-    </span>
-  );
+  return <LetterIcon url={tab.url} />;
 }
 
 function TabStrip({ tabs, onToast }: { tabs: TabsState; onToast: (s: string) => void }) {
+  const [dragId, setDragId] = useState<number | null>(null);
+  const [dropAt, setDropAt] = useState<number | null>(null);
+  const drop = () => {
+    if (dragId !== null && dropAt !== null) {
+      const from = tabs.tabs.findIndex((t) => t.id === dragId);
+      void api.tabs.move(dragId, from < dropAt ? dropAt - 1 : dropAt);
+    }
+    setDragId(null);
+    setDropAt(null);
+  };
   return (
-    <div className="tabstrip">
-      {tabs.tabs.map((t) => (
+    <div
+      className="tabstrip"
+      onDoubleClick={(e) => {
+        if (e.target === e.currentTarget && !isMac) void api.tabs.create();
+      }}
+    >
+      {tabs.tabs.map((t, i) => (
         <div
           key={t.id}
-          className={`tab ${t.id === tabs.activeId ? 'active' : ''}`}
+          className={`tab ${t.id === tabs.activeId ? 'active' : ''} ${dropAt === i ? 'drop-before' : ''} ${dropAt === i + 1 && i === tabs.tabs.length - 1 ? 'drop-after' : ''}`}
+          draggable
+          onDragStart={(e) => {
+            setDragId(t.id);
+            e.dataTransfer.effectAllowed = 'move';
+          }}
+          onDragOver={(e) => {
+            if (dragId === null) return;
+            e.preventDefault();
+            const r = e.currentTarget.getBoundingClientRect();
+            setDropAt(e.clientX < r.left + r.width / 2 ? i : i + 1);
+          }}
+          onDrop={(e) => {
+            e.preventDefault();
+            drop();
+          }}
+          onDragEnd={() => {
+            setDragId(null);
+            setDropAt(null);
+          }}
           onMouseDown={(e) => {
             if (e.button === 1) {
               e.preventDefault();
               void api.tabs.close(t.id);
             } else if (e.button === 0) void api.tabs.activate(t.id);
+          }}
+          onContextMenu={(e) => {
+            e.preventDefault();
+            void api.tabs.contextMenu(t.id);
           }}
           title={t.title}
         >
@@ -147,7 +175,7 @@ function TabStrip({ tabs, onToast }: { tabs: TabsState; onToast: (s: string) => 
           </button>
         </div>
       ))}
-      <button className="icon-btn new-tab" aria-label="Новая вкладка" onClick={() => api.tabs.create().catch((e) => onToast(errText(e)))}>
+      <button className="icon-btn new-tab" aria-label="Новая вкладка" title="Новая вкладка (Ctrl/⌘+T)" onClick={() => api.tabs.create().catch((e) => onToast(errText(e)))}>
         <I.Plus />
       </button>
     </div>
@@ -178,12 +206,12 @@ function Toolbar(props: {
   tab: TabInfo | null;
   locked: boolean;
   tunnel: TunnelState;
-  panel: Panel;
-  setPanel: (p: Panel) => void;
-  run: (fn: () => Promise<unknown>) => Promise<void>;
+  bookmarks: BookmarksState;
+  togglePanel: (p: PanelName) => void;
+  run: Run;
   updateReady: boolean;
 }) {
-  const { tab, locked, tunnel, panel, setPanel, run, updateReady } = props;
+  const { tab, locked, tunnel, bookmarks, togglePanel, run, updateReady } = props;
   const [value, setValue] = useState('');
   const [editing, setEditing] = useState(false);
   const input = useRef<HTMLInputElement>(null);
@@ -245,20 +273,20 @@ function Toolbar(props: {
           onChange={(e) => setValue(e.target.value)}
           onKeyDown={onKey}
         />
+        <BookmarkStar tab={tab} bookmarks={bookmarks} locked={locked} run={run} />
       </form>
-      <StatusPill tunnel={tunnel} onClick={() => setPanel(panel === 'servers' ? null : 'servers')} />
-      <button
-        className={`icon-btn ${updateReady ? 'badge' : ''}`}
-        onClick={() => setPanel(panel === 'settings' ? null : 'settings')}
-        aria-label="Настройки"
-      >
+      <button className="icon-btn" onClick={() => togglePanel('bookmarks')} aria-label="Закладки" title="Закладки (Ctrl/⌘+Alt+B)">
+        <I.Bookmarks />
+      </button>
+      <StatusPill tunnel={tunnel} onClick={() => togglePanel('servers')} />
+      <button className={`icon-btn ${updateReady ? 'badge' : ''}`} onClick={() => togglePanel('settings')} aria-label="Настройки">
         <I.Menu />
       </button>
     </div>
   );
 }
 
-function UpdateBanner({ update, run }: { update: UpdateState; run: (fn: () => Promise<unknown>) => Promise<void> }) {
+function UpdateBanner({ update, run }: { update: UpdateState; run: Run }) {
   const [showNotes, setShowNotes] = useState(false);
   if (update.status === 'available') {
     return (
@@ -300,10 +328,11 @@ function Content(props: {
   tunnel: TunnelState;
   locked: boolean;
   profiles: ProfilesState;
-  run: (fn: () => Promise<unknown>) => Promise<void>;
+  bookmarks: BookmarksState;
+  run: Run;
   openServers: () => void;
 }) {
-  const { tab, tunnel, locked, profiles, run, openServers } = props;
+  const { tab, tunnel, locked, profiles, bookmarks, run, openServers } = props;
   const ref = useRef<HTMLDivElement>(null);
 
   useLayoutEffect(() => {
@@ -325,7 +354,7 @@ function Content(props: {
 
   let inner = null;
   if (locked) inner = <LockScreen tunnel={tunnel} profiles={profiles} run={run} openServers={openServers} />;
-  else if (tab && !tab.url) inner = <StartPage tab={tab} tunnel={tunnel} run={run} />;
+  else if (tab && !tab.url) inner = <StartPage tab={tab} tunnel={tunnel} bookmarks={bookmarks} run={run} />;
   else if (tab?.error)
     inner = (
       <div className="center">
@@ -351,7 +380,7 @@ function Content(props: {
 function LockScreen(props: {
   tunnel: TunnelState;
   profiles: ProfilesState;
-  run: (fn: () => Promise<unknown>) => Promise<void>;
+  run: Run;
   openServers: () => void;
 }) {
   const { tunnel, profiles, run, openServers } = props;
@@ -398,7 +427,7 @@ function LockScreen(props: {
   );
 }
 
-function StartPage({ tab, tunnel, run }: { tab: TabInfo; tunnel: TunnelState; run: (fn: () => Promise<unknown>) => Promise<void> }) {
+function StartPage({ tab, tunnel, bookmarks, run }: { tab: TabInfo; tunnel: TunnelState; bookmarks: BookmarksState; run: Run }) {
   const [q, setQ] = useState('');
   return (
     <div className="center">
@@ -419,6 +448,7 @@ function StartPage({ tab, tunnel, run }: { tab: TabInfo; tunnel: TunnelState; ru
           <I.Search />
           <input value={q} onChange={(e) => setQ(e.target.value)} placeholder="Поиск в DuckDuckGo или адрес сайта" spellCheck={false} />
         </form>
+        <BookmarkTiles bookmarks={bookmarks} run={run} />
       </div>
     </div>
   );
@@ -429,7 +459,7 @@ function StartPage({ tab, tunnel, run }: { tab: TabInfo; tunnel: TunnelState; ru
 function ServersPanel(props: {
   profiles: ProfilesState;
   tunnel: TunnelState;
-  run: (fn: () => Promise<unknown>) => Promise<void>;
+  run: Run;
   onClose: () => void;
 }) {
   const { profiles, tunnel, run, onClose } = props;
@@ -562,13 +592,15 @@ function ServersPanel(props: {
 
 // ---------------------------------------------------------------- settings
 
-function SettingsPanel({ update, run, onClose }: { update: UpdateState; run: (fn: () => Promise<unknown>) => Promise<void>; onClose: () => void }) {
+function SettingsPanel({ update, run, onClose }: { update: UpdateState; run: Run; onClose: () => void }) {
   const [info, setInfo] = useState<{ version: string; platform: string; xrayVersion: string; repo: string } | null>(null);
   const [history, setHistory] = useState<ReleaseEntry[] | null>(null);
   const [historyError, setHistoryError] = useState<string | null>(null);
   const [cleared, setCleared] = useState(false);
+  const [settings, setSettings] = useState<BrowserSettings | null>(null);
 
   useEffect(() => {
+    void api.app.settings().then(setSettings);
     void api.app.info().then(setInfo);
     api.updates
       .history()
@@ -630,6 +662,33 @@ function SettingsPanel({ update, run, onClose }: { update: UpdateState; run: (fn
               <pre className="notes">{r.notes || 'Без описания'}</pre>
             </details>
           ))}
+        </section>
+
+        <section className="group">
+          <div className="group-title">Браузер</div>
+          {settings && (
+            <>
+              <label className="toggle">
+                <input
+                  type="checkbox"
+                  checked={settings.restoreTabs}
+                  onChange={(e) => run(async () => setSettings(await api.app.setSettings({ restoreTabs: e.target.checked })))}
+                />
+                <span>
+                  Восстанавливать вкладки при запуске
+                  <span className="muted small">Страницы загрузятся, когда подключится туннель.</span>
+                </span>
+              </label>
+              <label className="toggle">
+                <input
+                  type="checkbox"
+                  checked={settings.showBookmarksBar}
+                  onChange={(e) => run(async () => setSettings(await api.app.setSettings({ showBookmarksBar: e.target.checked })))}
+                />
+                <span>Показывать панель закладок (Ctrl/⌘+Shift+B)</span>
+              </label>
+            </>
+          )}
         </section>
 
         <section className="group">

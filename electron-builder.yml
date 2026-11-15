@@ -53,12 +53,22 @@ nsis:
 mac:
   icon: build/icon.png
   category: public.app-category.productivity
+  # No Apple Developer ID yet: ad-hoc signature (required to run on Apple Silicon), without
+  # the hardened runtime, which ad-hoc signing does not support. The app updates itself
+  # (src/main/macUpdate.ts) because Squirrel.Mac only accepts Developer ID signatures.
+  # With a Developer ID: drop identity, enable hardenedRuntime and notarization.
+  identity: '-'
+  hardenedRuntime: false
+  gatekeeperAssess: false
   target:
     - target: dmg
       arch: [arm64, x64]
     - target: zip
       arch: [arm64, x64]
   artifactName: TunnelBrowser-${version}-${arch}.${ext}
+
+dmg:
+  title: Tunnel Browser ${version}
 
 publish:
   provider: github

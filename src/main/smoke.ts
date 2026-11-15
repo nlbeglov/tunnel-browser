@@ -6,6 +6,7 @@ import { writeFileSync } from 'node:fs';
 import http from 'node:http';
 import { join } from 'node:path';
 import { parseMany } from './links';
+import type { BrowserData } from './browserData';
 import type { Store } from './store';
 import type { Tabs } from './tabs';
 import type { Tunnel } from './tunnel';
@@ -17,6 +18,7 @@ interface Ctx {
   tunnel: Tunnel;
   tabs: Tabs;
   store: Store;
+  browser: BrowserData;
 }
 
 interface LoadResult {
@@ -102,6 +104,15 @@ export async function runSmoke(ctx: Ctx): Promise<void> {
     await direct;
     check('открыть сайт без туннеля нельзя (сеть)', !r0.ok, `код ${r0.code}`);
 
+    // --- 1b. a tab restored from the last session waits for the tunnel
+    const TRACE = 'https://www.cloudflare.com/cdn-cgi/trace';
+    ctx.tabs.restore([{ url: TRACE, title: 'Восстановленная вкладка' }], 0);
+    const restoredId = ctx.tabs.state().activeId!;
+    const restoredInfo = ctx.tabs.state().tabs.find((t) => t.id === restoredId);
+    let restoredLoaded = false;
+    ctx.tabs.withTab(restoredId, () => (restoredLoaded = true)); // only possible once it has loaded
+    check('восстановленная вкладка ждёт туннель и не грузится', restoredInfo?.url === TRACE && !restoredLoaded, restoredInfo?.title);
+
     // --- 2. connect
     const { profiles, errors } = parseMany(process.env.TB_SMOKE_LINK ?? '');
     check('тестовая ссылка разобрана', profiles.length === 1, errors.join('; '));
@@ -111,6 +122,18 @@ export async function runSmoke(ctx: Ctx): Promise<void> {
     check('туннель подключён и проверен', st.status === 'connected', st.message ?? JSON.stringify(st.exit));
     const rp1 = await ctx.gate.ses.resolveProxy('https://example.com/');
     check('с туннелем браузер ходит только через локальный вход Xray', /^PROXY 127\.0\.0\.1:\d+$/.test(rp1.trim()) && rp1 !== rp0, rp1);
+
+    let restoredText = '';
+    for (let i = 0; i < 100 && !restoredText.includes('ip='); i++) {
+      await sleep(200);
+      let wcR: WebContents | null = null;
+      ctx.tabs.withTab(restoredId, (w) => (wcR = w));
+      const w = wcR as WebContents | null;
+      if (w && !w.isLoading() && w.getURL().startsWith(TRACE)) restoredText = await w.executeJavaScript('document.body.innerText');
+    }
+    check('после подключения восстановленная вкладка открылась через туннель', restoredText.includes('ip='));
+    ctx.tabs.close(restoredId);
+    ctx.tabs.activate(tabId);
 
     // --- 3. a real page through the tunnel
     ctx.tabs.navigate(tabId, 'https://www.cloudflare.com/cdn-cgi/trace');
@@ -124,6 +147,26 @@ export async function runSmoke(ctx: Ctx): Promise<void> {
       `document.fonts.load('16px "Twemoji Country Flags"', '\u{1F1E9}\u{1F1EA}').then((f) => f.length)`,
     );
     check('шрифт с флагами загружен (флаги на Windows)', flagFont > 0, `найдено начертаний: ${flagFont}`);
+
+    // --- 3b. bookmarks
+    const bm = ctx.browser.addBookmark(TRACE, 'Cloudflare trace');
+    const again = ctx.browser.addBookmark(`${TRACE}#x`, 'дубль');
+    ctx.browser.addBookmark('https://example.com/', 'Example');
+    check(
+      'закладка добавлена, повторная не дублируется',
+      ctx.browser.bookmarksState().items.length === 2 && again.id === bm.id && ctx.browser.byUrl(TRACE)?.id === bm.id,
+    );
+    let badRejected = false;
+    try {
+      ctx.browser.addBookmark('file:///etc/passwd', 'x');
+    } catch {
+      badRejected = true;
+    }
+    check('в закладки нельзя добавить не-веб адрес', badRejected);
+    await sleep(600);
+    writeFileSync(join(outDir, 'ui-bookmarks.png'), (await ctx.win.webContents.capturePage()).toPNG());
+    const snap = ctx.tabs.sessionSnapshot();
+    check('открытые вкладки попадают в сохраняемую сессию', snap.tabs.some((t) => t.url.startsWith(TRACE)), `${snap.tabs.length} шт.`);
 
     // --- 4. localhost and LAN are unreachable from pages
     const fetchResult: string = await page.executeJavaScript(

@@ -1,5 +1,5 @@
 import { contextBridge, ipcRenderer, type IpcRendererEvent } from 'electron';
-import type { BridgeApi } from '../shared/types';
+import type { BridgeApi, PanelName } from '../shared/types';
 
 const call = (channel: string, ...args: unknown[]) => ipcRenderer.invoke(channel, ...args);
 
@@ -36,10 +36,24 @@ const api: BridgeApi = {
     forward: (id) => call('tabs:forward', id),
     reload: (id) => call('tabs:reload', id),
     stop: (id) => call('tabs:stop', id),
+    move: (id, toIndex) => call('tabs:move', id, toIndex),
+    contextMenu: (id) => call('tabs:context-menu', id),
+    reopenClosed: () => call('tabs:reopen-closed'),
     setBounds: (rect) => ipcRenderer.send('tabs:bounds', rect),
     setOverlay: (open) => ipcRenderer.send('tabs:overlay', open),
     onChange: (cb) => listen('tabs:changed', cb),
     onFocusAddressBar: (cb) => listen('ui:focus-address', cb),
+  },
+  bookmarks: {
+    get: () => call('bookmarks:get'),
+    add: (url, title) => call('bookmarks:add', url, title),
+    remove: (id) => call('bookmarks:remove', id),
+    update: (id, patch) => call('bookmarks:update', id, patch),
+    move: (id, toIndex) => call('bookmarks:move', id, toIndex),
+    open: (id, mode) => call('bookmarks:open', id, mode),
+    contextMenu: (id) => call('bookmarks:context-menu', id),
+    overflowMenu: (ids) => call('bookmarks:overflow-menu', ids),
+    onChange: (cb) => listen('bookmarks:changed', cb),
   },
   updates: {
     get: () => call('updates:get'),
@@ -49,8 +63,18 @@ const api: BridgeApi = {
     onChange: (cb) => listen('updates:changed', cb),
   },
   app: {
+    platform: process.platform,
     info: () => call('app:info'),
     clearBrowsingData: () => call('app:clear-data'),
+    settings: () => call('app:settings'),
+    setSettings: (patch) => call('app:set-settings', patch),
+    onOpenPanel: (cb) => {
+      const fn = (_e: IpcRendererEvent, panel: PanelName, bookmarkId?: string) => cb(panel, bookmarkId);
+      ipcRenderer.on('ui:open-panel', fn);
+      return () => ipcRenderer.removeListener('ui:open-panel', fn);
+    },
+    onFullScreen: (cb) => listen('ui:fullscreen', cb),
+    onError: (cb) => listen('ui:error', cb),
   },
 };
 

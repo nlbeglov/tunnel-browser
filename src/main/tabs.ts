@@ -1,19 +1,29 @@
 // Browser tabs as WebContentsViews inside the main window. Every tab and popup lives in
-// the tunnel session. While the tunnel is locked, no tab view is attached to the window.
+// the tunnel session. While the tunnel is locked, no tab view is attached to the window,
+// and tabs restored from the last session wait (unloaded) until the tunnel is up.
 
 import { BrowserWindow, Menu, WebContentsView, clipboard, type Rectangle, type Session, type WebContents } from 'electron';
 import { EventEmitter } from 'node:events';
-import type { TabInfo, TabsState } from '../shared/types';
+import type { OpenMode, TabInfo, TabsState } from '../shared/types';
 import { isWebUrl } from './guard';
 import { inputToUrl, loadErrorText } from './url';
+
+export interface TabEntry {
+  url: string;
+  title: string;
+}
 
 interface Tab {
   id: number;
   view: WebContentsView;
   /** false for a fresh tab that shows the start page */
   started: boolean;
+  /** restored or opened while locked: loads when it is shown with the tunnel up */
+  pending?: TabEntry;
   error?: string;
 }
+
+const MAX_CLOSED = 25;
 
 export class Tabs extends EventEmitter<{ change: [TabsState] }> {
   private readonly tabs = new Map<number, Tab>();
@@ -26,6 +36,7 @@ export class Tabs extends EventEmitter<{ change: [TabsState] }> {
   private attached: WebContentsView | null = null;
   private readonly popups = new Set<BrowserWindow>();
   private emitTimer: NodeJS.Timeout | null = null;
+  private closed: TabEntry[] = [];
 
   constructor(
     private readonly win: BrowserWindow,
@@ -35,11 +46,26 @@ export class Tabs extends EventEmitter<{ change: [TabsState] }> {
   }
 
   state(): TabsState {
-    return { tabs: this.order.map((id) => this.info(this.tabs.get(id)!)), activeId: this.activeId };
+    return {
+      tabs: this.order.map((id) => this.info(this.tabs.get(id)!)),
+      activeId: this.activeId,
+      canReopen: this.closed.length > 0,
+    };
+  }
+
+  private entry(t: Tab): TabEntry | null {
+    if (t.pending) return t.pending;
+    if (!t.started) return null;
+    const wc = t.view.webContents;
+    const url = wc.getURL();
+    return isWebUrl(url) ? { url, title: wc.getTitle() || url } : null;
   }
 
   private info(t: Tab): TabInfo {
     const wc = t.view.webContents;
+    if (t.pending) {
+      return { id: t.id, url: t.pending.url, title: t.pending.title, loading: false, canGoBack: false, canGoForward: false };
+    }
     return {
       id: t.id,
       url: t.started ? wc.getURL() : '',
@@ -63,7 +89,31 @@ export class Tabs extends EventEmitter<{ change: [TabsState] }> {
     return this.activeId === null ? null : (this.tabs.get(this.activeId)?.view.webContents ?? null);
   }
 
-  create(input?: string, activate = true): number {
+  /** URL and title of the active tab, if it shows a web page. */
+  activeEntry(): TabEntry | null {
+    const t = this.activeId === null ? undefined : this.tabs.get(this.activeId);
+    return t ? this.entry(t) : null;
+  }
+
+  entryOf(id: number): TabEntry | null {
+    const t = this.tabs.get(id);
+    return t ? this.entry(t) : null;
+  }
+
+  /** Restorable tabs in order, and which of them is active. */
+  sessionSnapshot(): { tabs: TabEntry[]; activeIndex: number } {
+    const tabs: TabEntry[] = [];
+    let activeIndex = 0;
+    for (const id of this.order) {
+      const e = this.entry(this.tabs.get(id)!);
+      if (!e) continue;
+      if (id === this.activeId) activeIndex = tabs.length;
+      tabs.push(e);
+    }
+    return { tabs, activeIndex };
+  }
+
+  private newTab(position: number): Tab {
     const view = new WebContentsView({
       webPreferences: {
         session: this.ses,
@@ -79,14 +129,68 @@ export class Tabs extends EventEmitter<{ change: [TabsState] }> {
     view.setBackgroundColor('#ffffff');
     const tab: Tab = { id: this.nextId++, view, started: false };
     this.tabs.set(tab.id, tab);
-    const at = this.activeId === null ? -1 : this.order.indexOf(this.activeId);
-    this.order.splice(at + 1, 0, tab.id);
+    this.order.splice(Math.max(0, Math.min(position, this.order.length)), 0, tab.id);
     this.wire(tab);
+    return tab;
+  }
+
+  private afterActive(): number {
+    return this.activeId === null ? this.order.length : this.order.indexOf(this.activeId) + 1;
+  }
+
+  /** New tab next to the active one; with input it navigates (or waits for the tunnel). */
+  create(input?: string, activate = true): number {
+    const tab = this.newTab(this.afterActive());
     if (activate || this.activeId === null) this.activeId = tab.id;
-    if (input) this.navigate(tab.id, input);
+    if (input) {
+      if (this.locked) tab.pending = { url: inputToUrl(input), title: input };
+      else this.navigate(tab.id, input);
+    }
     this.layout();
     this.changed();
     return tab.id;
+  }
+
+  /** Recreates the last session's tabs without loading them. */
+  restore(entries: TabEntry[], activeIndex: number) {
+    const ids = entries.map((e, i) => {
+      const tab = this.newTab(this.order.length);
+      tab.pending = { url: e.url, title: e.title || e.url };
+      return i === activeIndex ? tab.id : -1;
+    });
+    const active = ids.find((id) => id >= 0);
+    if (active !== undefined) this.activeId = active;
+    else if (this.order.length) this.activeId = this.order[0];
+    this.loadPendingIfShown();
+    this.layout();
+    this.changed();
+  }
+
+  /** Opens a URL the way Chrome does for bookmarks and links. */
+  open(url: string, mode: OpenMode) {
+    if (mode === 'current' && this.activeId !== null) {
+      const tab = this.tabs.get(this.activeId)!;
+      if (this.locked) {
+        tab.pending = { url: inputToUrl(url), title: url };
+        this.layout();
+        this.changed();
+      } else this.navigate(tab.id, url);
+      return;
+    }
+    this.create(url, mode !== 'background');
+  }
+
+  private loadPendingIfShown() {
+    if (this.locked || this.activeId === null) return;
+    const tab = this.tabs.get(this.activeId);
+    if (!tab?.pending) return;
+    const { url } = tab.pending;
+    tab.pending = undefined;
+    tab.started = true;
+    tab.error = undefined;
+    tab.view.webContents.loadURL(url).catch(() => {
+      /* reported through did-fail-load */
+    });
   }
 
   private wire(tab: Tab) {
@@ -169,6 +273,11 @@ export class Tabs extends EventEmitter<{ change: [TabsState] }> {
   close(id: number) {
     const tab = this.tabs.get(id);
     if (!tab) return;
+    const e = this.entry(tab);
+    if (e) {
+      this.closed.push(e);
+      if (this.closed.length > MAX_CLOSED) this.closed.shift();
+    }
     const idx = this.order.indexOf(id);
     this.order.splice(idx, 1);
     this.tabs.delete(id);
@@ -179,13 +288,59 @@ export class Tabs extends EventEmitter<{ change: [TabsState] }> {
     tab.view.webContents.close();
     if (this.activeId === id) this.activeId = this.order[Math.min(idx, this.order.length - 1)] ?? null;
     if (this.order.length === 0) this.create();
+    this.loadPendingIfShown();
     this.layout();
+    this.changed();
+  }
+
+  closeOthers(id: number) {
+    for (const other of this.order.filter((x) => x !== id)) this.close(other);
+  }
+
+  closeToRight(id: number) {
+    const i = this.order.indexOf(id);
+    if (i < 0) return;
+    for (const other of this.order.slice(i + 1)) this.close(other);
+  }
+
+  reopenClosed() {
+    const e = this.closed.pop();
+    if (e) this.create(e.url, true);
+    else this.changed();
+  }
+
+  duplicate(id: number) {
+    const e = this.entryOf(id);
+    if (!e) return;
+    const i = this.order.indexOf(id);
+    const tab = this.newTab(i + 1);
+    this.activeId = tab.id;
+    if (this.locked) tab.pending = e;
+    else this.navigate(tab.id, e.url);
+    this.layout();
+    this.changed();
+  }
+
+  newTabRightOf(id: number) {
+    const i = this.order.indexOf(id);
+    const tab = this.newTab(i < 0 ? this.order.length : i + 1);
+    this.activeId = tab.id;
+    this.layout();
+    this.changed();
+  }
+
+  move(id: number, toIndex: number) {
+    const from = this.order.indexOf(id);
+    if (from < 0) return;
+    this.order.splice(from, 1);
+    this.order.splice(Math.max(0, Math.min(toIndex, this.order.length)), 0, id);
     this.changed();
   }
 
   activate(id: number) {
     if (!this.tabs.has(id)) return;
     this.activeId = id;
+    this.loadPendingIfShown();
     this.layout();
     this.changed();
   }
@@ -201,6 +356,7 @@ export class Tabs extends EventEmitter<{ change: [TabsState] }> {
     if (!tab) return;
     if (this.locked) throw new Error('браузер заблокирован: сначала подключите туннель');
     const url = inputToUrl(input);
+    tab.pending = undefined;
     tab.started = true;
     tab.error = undefined;
     this.layout();
@@ -210,18 +366,22 @@ export class Tabs extends EventEmitter<{ change: [TabsState] }> {
     this.changed();
   }
 
-  withTab(id: number, fn: (wc: WebContents, tab: Tab) => void) {
+  withTab(id: number, fn: (wc: WebContents) => void) {
     const tab = this.tabs.get(id);
-    if (tab) fn(tab.view.webContents, tab);
+    if (tab && !tab.pending) fn(tab.view.webContents);
   }
 
   reload(id: number) {
-    this.withTab(id, (wc, tab) => {
-      if (this.locked || !tab.started) return;
-      tab.error = undefined;
-      wc.reload();
-      this.layout();
-    });
+    const tab = this.tabs.get(id);
+    if (!tab || this.locked) return;
+    if (tab.pending) {
+      this.activate(id);
+      return;
+    }
+    if (!tab.started) return;
+    tab.error = undefined;
+    tab.view.webContents.reload();
+    this.layout();
   }
 
   setBounds(r: Rectangle) {
@@ -253,6 +413,7 @@ export class Tabs extends EventEmitter<{ change: [TabsState] }> {
           t.view.webContents.reload();
         }
       }
+      this.loadPendingIfShown();
     }
     this.layout();
     this.changed();
@@ -261,7 +422,8 @@ export class Tabs extends EventEmitter<{ change: [TabsState] }> {
   /** Attach exactly the one view that should be visible, or none. */
   private layout() {
     const tab = this.activeId === null ? undefined : this.tabs.get(this.activeId);
-    const visible = !this.locked && !this.overlay && tab && tab.started && !tab.error && this.bounds.width > 0;
+    const visible =
+      !this.locked && !this.overlay && tab && tab.started && !tab.pending && !tab.error && this.bounds.width > 0;
     const want = visible ? tab.view : null;
     if (this.attached && this.attached !== want) {
       this.win.contentView.removeChildView(this.attached);

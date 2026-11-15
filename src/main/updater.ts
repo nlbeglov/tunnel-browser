@@ -3,12 +3,15 @@
 import { app } from 'electron';
 import { autoUpdater, type UpdateInfo } from 'electron-updater';
 import { EventEmitter } from 'node:events';
+import { join } from 'node:path';
 import type { ReleaseEntry, UpdateState } from '../shared/types';
+import { assertReplaceable, bundleOf, checkBundle, downloadVerified, launchSwap, pickMacZip, unpackApp } from './macUpdate';
 
 declare const __APP_REPO__: string;
 export const APP_REPO = __APP_REPO__;
 
 const CHECK_EVERY_MS = 6 * 60 * 60 * 1000;
+const BUNDLE_ID = 'app.tunnelbrowser.desktop';
 
 function notesText(notes: UpdateInfo['releaseNotes']): string {
   const raw = Array.isArray(notes) ? notes.map((n) => n.note ?? '').join('\n\n') : (notes ?? '');
@@ -34,6 +37,7 @@ export function htmlToText(html: string): string {
 export class Updater extends EventEmitter<{ change: [UpdateState] }> {
   private st: UpdateState;
   private timer: NodeJS.Timeout | null = null;
+  private info: UpdateInfo | null = null;
 
   constructor(private readonly beforeInstall: () => Promise<void>) {
     super();
@@ -50,9 +54,10 @@ export class Updater extends EventEmitter<{ change: [UpdateState] }> {
     autoUpdater.logger = null;
 
     autoUpdater.on('checking-for-update', () => this.patch({ status: 'checking', message: undefined }));
-    autoUpdater.on('update-available', (info) =>
-      this.patch({ status: 'available', version: info.version, notes: notesText(info.releaseNotes) }),
-    );
+    autoUpdater.on('update-available', (info) => {
+      this.info = info;
+      this.patch({ status: 'available', version: info.version, notes: notesText(info.releaseNotes) });
+    });
     autoUpdater.on('update-not-available', () => this.patch({ status: 'not-available', version: undefined }));
     autoUpdater.on('download-progress', (p) => this.patch({ status: 'downloading', percent: Math.round(p.percent) }));
     autoUpdater.on('error', (e) =>
@@ -94,6 +99,7 @@ export class Updater extends EventEmitter<{ change: [UpdateState] }> {
     if (!this.st.version) return;
     try {
       this.patch({ status: 'downloading', percent: 0, message: undefined });
+      if (process.platform === 'darwin') return await this.installMac();
       await autoUpdater.downloadUpdate();
       this.patch({ status: 'installing' });
       // Xray must be stopped so the installer can replace its executable on Windows.
@@ -102,6 +108,27 @@ export class Updater extends EventEmitter<{ change: [UpdateState] }> {
     } catch (e) {
       this.patch({ status: 'error', message: `Не удалось обновиться: ${e instanceof Error ? e.message : e}` });
     }
+  }
+
+  /** macOS without a Developer ID: see macUpdate.ts. */
+  private async installMac(): Promise<void> {
+    const info = this.info;
+    if (!info || !APP_REPO) throw new Error('нет данных об обновлении');
+    const current = bundleOf(app.getPath('exe'));
+    assertReplaceable(current);
+    const file = pickMacZip(info.files, process.arch);
+    const base = `https://github.com/${APP_REPO}/releases/download/v${info.version}/`;
+    const work = join(app.getPath('temp'), `tunnel-browser-update-${info.version}`);
+    const zip = `${work}.zip`;
+    await downloadVerified(new URL(file.url, base).toString(), zip, file.sha512, (percent) =>
+      this.patch({ status: 'downloading', percent }),
+    );
+    this.patch({ status: 'installing', percent: 100 });
+    const next = await unpackApp(zip, work);
+    await checkBundle(next, { bundleId: BUNDLE_ID, version: info.version });
+    await this.beforeInstall();
+    launchSwap(process.pid, current, next, join(app.getPath('logs'), 'update.log'));
+    setImmediate(() => app.quit());
   }
 }
 

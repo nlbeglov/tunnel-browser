@@ -96,7 +96,30 @@ export interface TabInfo {
 export interface TabsState {
   tabs: TabInfo[];
   activeId: number | null;
+  /** a recently closed tab can be reopened (Ctrl/Cmd+Shift+T) */
+  canReopen: boolean;
 }
+
+export interface Bookmark {
+  id: string;
+  title: string;
+  url: string;
+  createdAt: number;
+}
+
+export interface BookmarksState {
+  items: Bookmark[];
+  showBar: boolean;
+}
+
+export interface BrowserSettings {
+  /** reopen the tabs of the last session on start (they load once the tunnel is up) */
+  restoreTabs: boolean;
+  showBookmarksBar: boolean;
+}
+
+export type OpenMode = 'current' | 'new-tab' | 'background';
+export type PanelName = 'servers' | 'settings' | 'bookmarks';
 
 export type UpdateStatus =
   | 'idle'
@@ -171,10 +194,24 @@ export interface BridgeApi {
     forward(id: number): Promise<void>;
     reload(id: number): Promise<void>;
     stop(id: number): Promise<void>;
+    move(id: number, toIndex: number): Promise<void>;
+    contextMenu(id: number): Promise<void>;
+    reopenClosed(): Promise<void>;
     setBounds(rect: UiRect): void;
     setOverlay(open: boolean): void;
     onChange(cb: (state: TabsState) => void): () => void;
     onFocusAddressBar(cb: () => void): () => void;
+  };
+  bookmarks: {
+    get(): Promise<BookmarksState>;
+    add(url: string, title: string): Promise<Bookmark>;
+    remove(id: string): Promise<void>;
+    update(id: string, patch: { title?: string; url?: string }): Promise<void>;
+    move(id: string, toIndex: number): Promise<void>;
+    open(id: string, mode: OpenMode): Promise<void>;
+    contextMenu(id: string): Promise<void>;
+    overflowMenu(ids: string[]): Promise<void>;
+    onChange(cb: (state: BookmarksState) => void): () => void;
   };
   updates: {
     get(): Promise<UpdateState>;
@@ -184,7 +221,13 @@ export interface BridgeApi {
     onChange(cb: (state: UpdateState) => void): () => void;
   };
   app: {
+    platform: string;
     info(): Promise<{ version: string; platform: string; xrayVersion: string; repo: string }>;
     clearBrowsingData(): Promise<void>;
+    settings(): Promise<BrowserSettings>;
+    setSettings(patch: Partial<BrowserSettings>): Promise<BrowserSettings>;
+    onOpenPanel(cb: (panel: PanelName, bookmarkId?: string) => void): () => void;
+    onFullScreen(cb: (full: boolean) => void): () => void;
+    onError(cb: (message: string) => void): () => void;
   };
 }

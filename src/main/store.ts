@@ -2,11 +2,11 @@
 // (UUIDs, passwords, keys), so the file is encrypted with the OS key store via safeStorage:
 // DPAPI on Windows, Keychain on macOS.
 
-import { app, safeStorage } from 'electron';
+import { app } from 'electron';
 import { EventEmitter } from 'node:events';
-import { existsSync, readFileSync, renameSync, writeFileSync } from 'node:fs';
 import { join } from 'node:path';
 import type { ProfilesState, ServerProfile, Subscription } from '../shared/types';
+import { EncryptedJsonFile } from './encryptedFile';
 
 interface StoreData {
   version: 1;
@@ -16,69 +16,35 @@ interface StoreData {
 }
 
 const EMPTY: StoreData = { version: 1, profiles: [], subscriptions: [] };
-const MAGIC_ENC = 'TBENC1\n';
-const MAGIC_PLAIN = 'TBRAW1\n';
 
 export class Store extends EventEmitter<{ change: [ProfilesState] }> {
   private data: StoreData = structuredClone(EMPTY);
-  private readonly file = join(app.getPath('userData'), 'profiles.dat');
-  /** false only on systems without a key store (some Linux setups) */
-  encrypted = true;
+  private readonly file: EncryptedJsonFile<StoreData>;
 
-  async load(): Promise<void> {
-    if (!existsSync(this.file)) return;
-    try {
-      const raw = readFileSync(this.file);
-      const head = raw.subarray(0, MAGIC_ENC.length).toString('utf8');
-      let json: string;
-      let reEncrypt = false;
-      if (head === MAGIC_ENC) {
-        const r = await safeStorage.decryptStringAsync(raw.subarray(MAGIC_ENC.length));
-        json = r.result;
-        reEncrypt = r.shouldReEncrypt;
-      } else if (head === MAGIC_PLAIN) {
-        json = raw.subarray(MAGIC_PLAIN.length).toString('utf8');
-        reEncrypt = true; // encrypt it as soon as the key store is available
-      } else throw new Error('unknown format');
-      const parsed = JSON.parse(json) as StoreData;
-      this.data = { ...structuredClone(EMPTY), ...parsed };
-      if (reEncrypt) this.save();
-    } catch (e) {
-      // Do not silently overwrite a file we failed to read: keep it aside for recovery.
-      const backup = `${this.file}.broken-${Date.now()}`;
-      try {
-        renameSync(this.file, backup);
-      } catch {
-        /* ignore */
-      }
-      console.error('Не удалось прочитать сохранённые серверы, файл сохранён как', backup, e);
-    }
+  constructor(onError?: (message: string) => void) {
+    super();
+    this.file = new EncryptedJsonFile<StoreData>(join(app.getPath('userData'), 'profiles.dat'), 'серверы', onError);
   }
 
-  private writing: Promise<void> = Promise.resolve();
+  get encrypted(): boolean {
+    return this.file.encrypted;
+  }
 
-  /** Writes are serialized; each one snapshots the data at call time. */
+  async load(): Promise<void> {
+    const r = await this.file.read();
+    if (!r) return;
+    this.data = { ...structuredClone(EMPTY), ...r.data };
+    if (r.reEncrypt) this.save();
+  }
+
   private save(): void {
     this.emit('change', this.state());
-    const json = JSON.stringify(this.data);
-    this.writing = this.writing.then(async () => {
-      try {
-        this.encrypted = await safeStorage.isAsyncEncryptionAvailable();
-        const payload = this.encrypted
-          ? Buffer.concat([Buffer.from(MAGIC_ENC), await safeStorage.encryptStringAsync(json)])
-          : Buffer.from(MAGIC_PLAIN + json);
-        const tmp = `${this.file}.tmp`;
-        writeFileSync(tmp, payload, { mode: 0o600 });
-        renameSync(tmp, this.file);
-      } catch (e) {
-        console.error('Не удалось сохранить серверы', e);
-      }
-    });
+    this.file.write(this.data);
   }
 
   /** Waits for pending writes (before quitting). */
   flush(): Promise<void> {
-    return this.writing;
+    return this.file.flush();
   }
 
   state(): ProfilesState {

@@ -1,10 +1,14 @@
 # Releases are driven by the version in package.json, so no tags need to be pushed by hand
 # (GitHub Desktop only pushes tags it created itself).
 #
-# On every push to main that touches package.json: if that version has no published GitHub
-# Release yet, run the tests on Windows, tag the commit vX.Y.Z, upload everything into a
-# draft release, check the files, and only then publish it. Users never see a half-uploaded
-# release, and parallel uploads cannot create duplicate releases (they did before).
+# On every push to main that touches package.json / package-lock.json: if that version has
+# no published GitHub Release yet:
+#   prepare  — tag the commit vX.Y.Z and create a draft release with the CHANGELOG notes;
+#   windows  — run the tests, build the installer, upload it into the draft;
+#   macos    — run the tests, build DMG + ZIP for Apple Silicon and Intel, upload them;
+#   publish  — check that every file is there, publish the draft, and check that installed
+#              apps on both systems will find the update.
+# Users never see a half-uploaded release; one parallel upload cannot create a second release.
 # The same run can be started by hand: Actions → Release → Run workflow.
 name: Release
 
@@ -45,30 +49,20 @@ jobs:
             echo "release=true" >> "$GITHUB_OUTPUT"
           fi
 
-  windows:
+  prepare:
     needs: check
     if: needs.check.outputs.release == 'true'
-    runs-on: windows-latest
-    timeout-minutes: 40
+    runs-on: ubuntu-latest
+    timeout-minutes: 5
     env:
       GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
       VER: ${{ needs.check.outputs.version }}
       TAG: v${{ needs.check.outputs.version }}
     steps:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
-      - uses: actions/setup-node@949feb2413d6458794dcd2491c4babbbce0c15c1 # v7.1.0
-        with:
-          node-version: 24
-          cache: npm
-
-      - run: npm ci
-      - run: npm run fetch-xray
-      - run: npm run typecheck
-      - run: npm test
       - run: node scripts/release-notes.mjs
 
       - name: Tag this commit
-        shell: bash
         run: |
           remote="$(git ls-remote --tags origin "refs/tags/$TAG" | cut -f1)"
           if [ -z "$remote" ]; then
@@ -82,27 +76,84 @@ jobs:
           fi
 
       - name: Create the draft release
-        shell: bash
         run: |
           if ! gh release view "$TAG" --json isDraft > /dev/null 2>&1; then
             gh release create "$TAG" --draft --verify-tag --title "$VER" --notes-file build/release-notes.md
           fi
 
+  windows:
+    needs: [check, prepare]
+    runs-on: windows-latest
+    timeout-minutes: 40
+    env:
+      GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+      - uses: actions/setup-node@949feb2413d6458794dcd2491c4babbbce0c15c1 # v7.1.0
+        with:
+          node-version: 24
+          cache: npm
+      - run: npm ci
+      - run: npm run fetch-xray
+      - run: npm run typecheck
+      - run: npm test
+      - run: node scripts/release-notes.mjs
       - name: Build and upload the installer into the draft
         run: npm run release:win
 
-      - name: Check the files and publish
-        shell: bash
+  macos:
+    needs: [check, prepare]
+    runs-on: macos-latest
+    timeout-minutes: 40
+    env:
+      GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+      # No Developer ID: never pick up a random certificate from the runner's keychain.
+      CSC_IDENTITY_AUTO_DISCOVERY: 'false'
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+      - uses: actions/setup-node@949feb2413d6458794dcd2491c4babbbce0c15c1 # v7.1.0
+        with:
+          node-version: 24
+          cache: npm
+      - run: npm ci
+      - run: npm run fetch-xray
+      - run: npm run typecheck
+      - run: npm test
+      - run: node scripts/release-notes.mjs
+      - name: Build and upload DMG + ZIP (Apple Silicon and Intel) into the draft
+        run: npm run release:mac
+      - name: Check the signatures of what was built
         run: |
-          assets="$(gh release view "$TAG" --json assets --jq '.assets[].name')"
-          for f in latest.yml "TunnelBrowser-Setup-$VER-x64.exe" "TunnelBrowser-Setup-$VER-x64.exe.blockmap"; do
+          for app in "dist/mac-arm64/Tunnel Browser.app" "dist/mac/Tunnel Browser.app"; do
+            codesign --verify --deep --strict "$app"
+          done
+
+  publish:
+    needs: [check, windows, macos]
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+    env:
+      GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+      VER: ${{ needs.check.outputs.version }}
+      TAG: v${{ needs.check.outputs.version }}
+    steps:
+      - name: Check the files and publish
+        run: |
+          assets="$(gh release view "$TAG" --repo "$GITHUB_REPOSITORY" --json assets --jq '.assets[].name')"
+          echo "$assets"
+          for f in latest.yml latest-mac.yml \
+                   "TunnelBrowser-Setup-$VER-x64.exe" "TunnelBrowser-Setup-$VER-x64.exe.blockmap" \
+                   "TunnelBrowser-$VER-arm64.dmg" "TunnelBrowser-$VER-x64.dmg" \
+                   "TunnelBrowser-$VER-arm64.zip" "TunnelBrowser-$VER-x64.zip"; do
             grep -qxF "$f" <<< "$assets" || { echo "::error::В релизе нет файла $f"; exit 1; }
           done
-          gh release edit "$TAG" --draft=false --latest
+          gh release edit "$TAG" --repo "$GITHUB_REPOSITORY" --draft=false --latest
 
       - name: Check that installed apps will find this update
-        shell: bash
         run: |
           sleep 5
-          curl -fsSL "https://github.com/$GITHUB_REPOSITORY/releases/download/$TAG/latest.yml" | tee latest.yml
-          grep -qx "version: $VER" latest.yml
+          for feed in latest.yml latest-mac.yml; do
+            curl -fsSL "https://github.com/$GITHUB_REPOSITORY/releases/download/$TAG/$feed" -o "$feed"
+            grep -qx "version: $VER" "$feed" || { echo "::error::$feed не отдаёт версию $VER"; exit 1; }
+            echo "$feed: ok"
+          done
