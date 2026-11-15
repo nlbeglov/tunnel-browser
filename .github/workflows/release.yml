@@ -1,9 +1,10 @@
 # Releases are driven by the version in package.json, so no tags need to be pushed by hand
 # (GitHub Desktop only pushes tags it created itself).
 #
-# On every push to main that touches package.json: if there is no GitHub Release for that
-# version yet, run the tests on Windows, tag the commit vX.Y.Z, build the installer and
-# publish the release. Installed apps then offer a one-click update.
+# On every push to main that touches package.json: if that version has no published GitHub
+# Release yet, run the tests on Windows, tag the commit vX.Y.Z, upload everything into a
+# draft release, check the files, and only then publish it. Users never see a half-uploaded
+# release, and parallel uploads cannot create duplicate releases (they did before).
 # The same run can be started by hand: Actions → Release → Run workflow.
 name: Release
 
@@ -34,11 +35,12 @@ jobs:
         run: |
           v="$(node -p "require('./package.json').version")"
           echo "version=$v" >> "$GITHUB_OUTPUT"
-          if gh release view "v$v" --repo "$GITHUB_REPOSITORY" > /dev/null 2>&1; then
+          draft="$(gh release view "v$v" --repo "$GITHUB_REPOSITORY" --json isDraft --jq .isDraft 2>/dev/null || echo none)"
+          if [ "$draft" = "false" ]; then
             echo "Версия $v уже выпущена — новый релиз не нужен."
             echo "release=false" >> "$GITHUB_OUTPUT"
           else
-            echo "Версии $v ещё нет в релизах — выпускаем."
+            echo "Версия $v ещё не опубликована — выпускаем."
             echo "release=true" >> "$GITHUB_OUTPUT"
           fi
 
@@ -48,6 +50,11 @@ jobs:
     runs-on: windows-latest
     env:
       GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+      VER: ${{ needs.check.outputs.version }}
+      TAG: v${{ needs.check.outputs.version }}
+    defaults:
+      run:
+        shell: bash
     steps:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
       - uses: actions/setup-node@949feb2413d6458794dcd2491c4babbbce0c15c1 # v7.1.0
@@ -61,16 +68,38 @@ jobs:
       - run: npm test
       - run: node scripts/release-notes.mjs
 
-      - name: Tag this commit v${{ needs.check.outputs.version }}
-        shell: bash
+      - name: Tag this commit
         run: |
-          tag="v${{ needs.check.outputs.version }}"
-          if git ls-remote --exit-code --tags origin "refs/tags/$tag" > /dev/null; then
-            echo "Тег $tag уже есть на GitHub"
-          else
-            git tag "$tag" "$GITHUB_SHA"
-            git push origin "refs/tags/$tag"
+          remote="$(git ls-remote --tags origin "refs/tags/$TAG" | cut -f1)"
+          if [ -z "$remote" ]; then
+            git tag "$TAG" "$GITHUB_SHA"
+            git push origin "refs/tags/$TAG"
+          elif [ "$remote" != "$GITHUB_SHA" ]; then
+            # Only reachable when no release for this version is published (see "check").
+            echo "::warning::Тег $TAG указывал на $remote без опубликованного релиза — переставляю на $GITHUB_SHA"
+            git tag -f "$TAG" "$GITHUB_SHA"
+            git push -f origin "refs/tags/$TAG"
           fi
 
-      - name: Build and publish the installer
+      - name: Create the draft release
+        run: |
+          if ! gh release view "$TAG" --json isDraft > /dev/null 2>&1; then
+            gh release create "$TAG" --draft --verify-tag --title "$VER" --notes-file build/release-notes.md
+          fi
+
+      - name: Build and upload the installer into the draft
         run: npm run release:win
+
+      - name: Check the files and publish
+        run: |
+          assets="$(gh release view "$TAG" --json assets --jq '.assets[].name')"
+          for f in latest.yml "TunnelBrowser-Setup-$VER-x64.exe" "TunnelBrowser-Setup-$VER-x64.exe.blockmap"; do
+            grep -qxF "$f" <<< "$assets" || { echo "::error::В релизе нет файла $f"; exit 1; }
+          done
+          gh release edit "$TAG" --draft=false --latest
+
+      - name: Check that installed apps will find this update
+        run: |
+          sleep 5
+          curl -fsSL "https://github.com/$GITHUB_REPOSITORY/releases/download/$TAG/latest.yml" | tee latest.yml
+          grep -qx "version: $VER" latest.yml

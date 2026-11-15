@@ -62,4 +62,5 @@ mac:
 
 publish:
   provider: github
-  releaseType: release
+  # The release workflow creates the draft, checks the uploads and publishes it.
+  releaseType: draft
