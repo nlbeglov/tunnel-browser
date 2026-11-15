@@ -57,11 +57,14 @@ const updated =
 writeFileSync(clPath, updated);
 pkg.version = next;
 writeFileSync(pkgPath, `${JSON.stringify(pkg, null, 2)}\n`);
-execFileSync('npm', ['install', '--package-lock-only', '--ignore-scripts', '--no-audit', '--no-fund'], {
-  cwd: root,
-  stdio: 'ignore',
-  shell: process.platform === 'win32',
-});
+// Only the version fields change in the lockfile. Regenerating it with
+// `npm install --package-lock-only` dropped other platforms' optional packages
+// (npm bug), and `npm ci` on GitHub then refused the out-of-sync lockfile.
+const lockPath = join(root, 'package-lock.json');
+const lock = JSON.parse(readFileSync(lockPath, 'utf8'));
+lock.version = next;
+lock.packages[''].version = next;
+writeFileSync(lockPath, `${JSON.stringify(lock, null, 2)}\n`);
 
 git('add', 'CHANGELOG.md', 'package.json', 'package-lock.json');
 git('commit', '-m', `release: v${next}`);
