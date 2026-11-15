@@ -6,6 +6,11 @@
   "main": "out/main/index.js",
   "private": true,
   "license": "UNLICENSED",
+  "repository": {
+    "type": "git",
+    "url": "https://github.com/nlbeglov/tunnel-browser.git"
+  },
+  "homepage": "https://github.com/nlbeglov/tunnel-browser",
   "scripts": {
     "build": "node scripts/build.mjs",
     "dev": "node scripts/build.mjs && electron .",

@@ -90,6 +90,7 @@ describe.skipIf(!hasCore || !online)('real tunnels through a local server', () =
     const t = testConfig(config);
     if (!t.ok) throw new Error(`server config rejected: ${t.out}`);
     server = spawn(CORE, ['run', '-config', 'stdin:'], { stdio: ['pipe', 'ignore', 'inherit'] });
+    server.stdin!.on('error', () => {});
     server.stdin!.end(JSON.stringify(config));
     await new Promise((r) => setTimeout(r, 1500));
 

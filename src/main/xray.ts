@@ -134,6 +134,8 @@ export class XrayProcess extends EventEmitter<{ exit: [code: number | null, expe
       });
     });
     child.once('error', (e) => this.logLines.push(`spawn error: ${e.message}`));
+    // If the core dies before reading its config, writing to stdin fails with EPIPE.
+    child.stdin?.on('error', (e) => this.logLines.push(`stdin: ${e.message}`));
     child.stdin?.end(JSON.stringify(config));
 
     const deadline = Date.now() + timeoutMs;

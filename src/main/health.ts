@@ -16,20 +16,28 @@ interface HttpsResult {
   ms: number;
 }
 
-/** GET https://host/path through the proxy. */
+/**
+ * GET https://host/path through the proxy.
+ *
+ * Every socket involved keeps a permanent 'error' listener and is destroyed when the
+ * probe settles. A TLS socket can emit 'error' more than once: Node reports a TLS error
+ * after the handshake without closing the socket, and a reset can follow (Windows sends
+ * RST eagerly). A one-shot listener would let the second error crash the process.
+ */
 export function getViaProxy(proxy: ProxyEndpoint, host: string, path: string, timeoutMs = 8000): Promise<HttpsResult> {
   const started = Date.now();
   return new Promise((resolve, reject) => {
+    const sockets: Array<{ destroy(): void }> = [];
     let settled = false;
-    const fail = (e: Error) => {
+    const settle = (fn: () => void) => {
       if (settled) return;
       settled = true;
-      reject(e);
+      clearTimeout(timer);
+      for (const s of sockets) s.destroy();
+      fn();
     };
-    const timer = setTimeout(() => {
-      req.destroy();
-      fail(new Error('таймаут'));
-    }, timeoutMs);
+    const fail = (e: Error) => settle(() => reject(e));
+    const timer = setTimeout(() => fail(new Error('таймаут')), timeoutMs);
 
     const auth = Buffer.from(`${proxy.user}:${proxy.pass}`).toString('base64');
     const req = http.request({
@@ -40,39 +48,35 @@ export function getViaProxy(proxy: ProxyEndpoint, host: string, path: string, ti
       headers: { Host: `${host}:443`, 'Proxy-Authorization': `Basic ${auth}` },
       agent: false,
     });
-    req.once('error', (e) => {
-      clearTimeout(timer);
-      fail(e);
-    });
+    sockets.push(req);
+    req.on('error', fail);
     req.once('connect', (res, socket) => {
-      if (res.statusCode !== 200) {
-        clearTimeout(timer);
-        socket.destroy();
-        fail(new Error(`прокси ответил ${res.statusCode}`));
-        return;
-      }
+      // http drops its own error listener from the socket it hands over on CONNECT.
+      socket.on('error', fail);
+      sockets.push(socket);
+      if (settled) return;
+      if (res.statusCode !== 200) return fail(new Error(`прокси ответил ${res.statusCode}`));
+
       const s = tls.connect({ socket, servername: host, ALPNProtocols: ['http/1.1'] });
+      sockets.push(s);
+      s.on('error', fail);
       const chunks: Buffer[] = [];
+      let size = 0;
       s.once('secureConnect', () => {
         s.write(`GET ${path} HTTP/1.1\r\nHost: ${host}\r\nUser-Agent: Mozilla/5.0\r\nAccept: */*\r\nConnection: close\r\n\r\n`);
       });
       s.on('data', (c: Buffer) => {
         chunks.push(c);
-        if (Buffer.concat(chunks).length > 64 * 1024) s.destroy();
-      });
-      s.once('error', (e) => {
-        clearTimeout(timer);
-        fail(e);
+        size += c.length;
+        if (size > 64 * 1024) fail(new Error('слишком большой ответ'));
       });
       s.once('close', () => {
-        clearTimeout(timer);
-        if (settled) return;
         const raw = Buffer.concat(chunks).toString('utf8');
         const m = /^HTTP\/1\.[01] (\d{3})/.exec(raw);
         if (!m) return fail(new Error('пустой ответ'));
-        settled = true;
         const bodyAt = raw.indexOf('\r\n\r\n');
-        resolve({ status: Number(m[1]), body: bodyAt >= 0 ? raw.slice(bodyAt + 4) : '', ms: Date.now() - started });
+        const result = { status: Number(m[1]), body: bodyAt >= 0 ? raw.slice(bodyAt + 4) : '', ms: Date.now() - started };
+        settle(() => resolve(result));
       });
     });
     req.end();
