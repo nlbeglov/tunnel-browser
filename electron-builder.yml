@@ -1,0 +1,65 @@
+# Packaging and publishing. Releases go to GitHub Releases of the repository in
+# package.json "repository" (or the git remote); the app updates itself from there.
+
+appId: app.tunnelbrowser.desktop
+productName: Tunnel Browser
+copyright: Copyright © 2026 Tunnel Browser contributors
+
+directories:
+  output: dist
+  buildResources: build
+
+files:
+  - out/**
+  - package.json
+  - "!**/*.map"
+
+asar: true
+
+# The Xray core, verified against a pinned SHA-256 by scripts/fetch-xray.mjs.
+extraResources:
+  - from: resources/xray/${os}-${arch}
+    to: xray
+    filter:
+      - "**/*"
+      - "!VERSION"
+
+# Electron hardening switches baked into the executable.
+electronFuses:
+  runAsNode: false
+  enableCookieEncryption: true
+  enableNodeOptionsEnvironmentVariable: false
+  enableNodeCliInspectArguments: false
+  enableEmbeddedAsarIntegrityValidation: true
+  onlyLoadAppFromAsar: true
+
+win:
+  icon: build/icon.png
+  target:
+    - target: nsis
+      arch: [x64]
+  artifactName: TunnelBrowser-Setup-${version}-${arch}.${ext}
+
+nsis:
+  # Per-user install without admin rights: updates install silently in one click.
+  oneClick: true
+  perMachine: false
+  allowElevation: false
+  deleteAppDataOnUninstall: false
+  shortcutName: Tunnel Browser
+  uninstallDisplayName: Tunnel Browser
+  include: build/installer.nsh
+
+mac:
+  icon: build/icon.png
+  category: public.app-category.productivity
+  target:
+    - target: dmg
+      arch: [arm64, x64]
+    - target: zip
+      arch: [arm64, x64]
+  artifactName: TunnelBrowser-${version}-${arch}.${ext}
+
+publish:
+  provider: github
+  releaseType: release
