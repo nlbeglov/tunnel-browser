@@ -3,7 +3,7 @@
 //   node scripts/build.mjs --smoke   also includes the end-to-end self-test (never shipped)
 
 import { execFileSync } from 'node:child_process';
-import { copyFileSync, mkdirSync, readFileSync, rmSync } from 'node:fs';
+import { copyFileSync, cpSync, mkdirSync, readFileSync, rmSync } from 'node:fs';
 import { dirname, join } from 'node:path';
 import { fileURLToPath } from 'node:url';
 import { build } from 'esbuild';
@@ -79,4 +79,5 @@ await Promise.all([
 mkdirSync(join(out, 'renderer'), { recursive: true });
 copyFileSync(join(root, 'src/renderer/index.html'), join(out, 'renderer/index.html'));
 copyFileSync(join(root, 'src/renderer/styles.css'), join(out, 'renderer/styles.css'));
+cpSync(join(root, 'src/renderer/fonts'), join(out, 'renderer/fonts'), { recursive: true });
 console.log(`Сборка готова${smoke ? ' (с самопроверкой)' : ''}. Репозиторий для обновлений: ${repo || 'не задан'}`);

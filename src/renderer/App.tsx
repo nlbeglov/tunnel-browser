@@ -659,6 +659,7 @@ function SettingsPanel({ update, run, onClose }: { update: UpdateState; run: (fn
           </ul>
         </section>
         {info && <p className="muted small">{info.platform}{info.repo ? ` · github.com/${info.repo}` : ''}</p>}
+        <p className="muted small">Ядро Xray — MPL-2.0. Флаги стран — Twemoji, CC-BY 4.0.</p>
       </div>
     </aside>
   );

@@ -120,6 +120,10 @@ export async function runSmoke(ctx: Ctx): Promise<void> {
     await sleep(500);
     writeFileSync(join(outDir, 'tab.png'), (await page.capturePage()).toPNG());
     writeFileSync(join(outDir, 'ui.png'), (await ctx.win.webContents.capturePage()).toPNG());
+    const flagFont: number = await ctx.win.webContents.executeJavaScript(
+      `document.fonts.load('16px "Twemoji Country Flags"', '\u{1F1E9}\u{1F1EA}').then((f) => f.length)`,
+    );
+    check('шрифт с флагами загружен (флаги на Windows)', flagFont > 0, `найдено начертаний: ${flagFont}`);
 
     // --- 4. localhost and LAN are unreachable from pages
     const fetchResult: string = await page.executeJavaScript(

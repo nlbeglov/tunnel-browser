@@ -1,3 +1,13 @@
+/* Windows has no colour flag emoji (shows "DE" instead of a flag). This font contains only
+   country flags and is used for nothing else thanks to unicode-range.
+   Flags: Twemoji, CC-BY 4.0; font packaging: TalkJS country-flag-emoji-polyfill, MIT. */
+@font-face {
+  font-family: 'Twemoji Country Flags';
+  src: url('./fonts/TwemojiCountryFlags.woff2') format('woff2');
+  unicode-range: U+1F1E6-1F1FF, U+1F3F4, U+E0062-E007F;
+  font-display: swap;
+}
+
 :root {
   --bg: #15171c;
   --bg-2: #1d2027;
@@ -14,7 +24,7 @@
   --warn-bg: #3a2f17;
   --info-bg: #182a46;
   --radius: 10px;
-  --font: 'Segoe UI Variable Text', 'Segoe UI', system-ui, -apple-system, 'Helvetica Neue', Arial, sans-serif;
+  --font: 'Twemoji Country Flags', 'Segoe UI Variable Text', 'Segoe UI', system-ui, -apple-system, 'Helvetica Neue', Arial, sans-serif;
   color-scheme: dark;
 }
 
