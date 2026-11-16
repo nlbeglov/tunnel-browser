@@ -405,6 +405,10 @@ textarea {
   color: var(--muted);
 }
 
+.lock-icon.warn {
+  color: var(--warn);
+}
+
 .lock-icon.pulse {
   color: var(--warn);
   animation: blink 1.4s ease-in-out infinite;

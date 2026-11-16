@@ -1,6 +1,7 @@
 // Browser tabs as WebContentsViews inside the main window. Every tab and popup lives in
-// the tunnel session. While the tunnel is locked, no tab view is attached to the window,
-// and tabs restored from the last session wait (unloaded) until the tunnel is up.
+// the tunnel session. While the tunnel is locked (not connected, or connected but the
+// server stopped answering), no tab view is attached to the window, and tabs restored from
+// the last session wait (unloaded) until the tunnel is up.
 
 import { BrowserWindow, Menu, WebContentsView, clipboard, type Rectangle, type Session, type WebContents } from 'electron';
 import { EventEmitter } from 'node:events';
@@ -403,8 +404,8 @@ export class Tabs extends EventEmitter<{ change: [TabsState] }> {
     if (this.locked === locked) return;
     this.locked = locked;
     if (locked) {
-      for (const p of this.popups) p.close();
-      for (const t of this.tabs.values()) t.view.webContents.stop();
+      for (const p of this.popups) if (!p.isDestroyed()) p.close();
+      for (const t of this.tabs.values()) if (!t.view.webContents.isDestroyed()) t.view.webContents.stop();
     } else {
       // Pages that failed while the tunnel was down get another try.
       for (const t of this.tabs.values()) {
@@ -421,6 +422,7 @@ export class Tabs extends EventEmitter<{ change: [TabsState] }> {
 
   /** Attach exactly the one view that should be visible, or none. */
   private layout() {
+    if (this.win.isDestroyed()) return;
     const tab = this.activeId === null ? undefined : this.tabs.get(this.activeId);
     const visible =
       !this.locked && !this.overlay && tab && tab.started && !tab.pending && !tab.error && this.bounds.width > 0;
@@ -428,6 +430,8 @@ export class Tabs extends EventEmitter<{ change: [TabsState] }> {
     if (this.attached && this.attached !== want) {
       this.win.contentView.removeChildView(this.attached);
       this.attached = null;
+      // Repaint the UI under it now, so the page's last frame cannot linger on screen.
+      if (!want) this.win.webContents.invalidate();
     }
     if (want) {
       if (this.attached !== want) {

@@ -46,6 +46,37 @@ export function cleanUserAgent(ua: string): string {
     .replace(/Chrome\/(\d+)\.[\d.]+/, 'Chrome/$1.0.0.0');
 }
 
+// What a page sees when the tunnel's server is unreachable: Xray's HTTP inbound drops the
+// CONNECT stream for https, or the connection to the inbound itself fails.
+const TUNNEL_TROUBLE_ERRORS = new Set([
+  'net::ERR_CONNECTION_CLOSED',
+  'net::ERR_CONNECTION_RESET',
+  'net::ERR_CONNECTION_REFUSED',
+  'net::ERR_CONNECTION_FAILED',
+  'net::ERR_CONNECTION_TIMED_OUT',
+  'net::ERR_TIMED_OUT',
+  'net::ERR_EMPTY_RESPONSE',
+  'net::ERR_TUNNEL_CONNECTION_FAILED',
+  'net::ERR_PROXY_CONNECTION_FAILED',
+  'net::ERR_SSL_PROTOCOL_ERROR',
+  'net::ERR_HTTP2_PING_FAILED',
+  'net::ERR_SOCKET_NOT_CONNECTED',
+]);
+
+/** A page request failed in a way a dead tunnel causes (not a block, abort or bad page). */
+export function isTunnelTroubleError(error: string): boolean {
+  return TUNNEL_TROUBLE_ERRORS.has(error);
+}
+
+/**
+ * Xray's own answer to a plain-http request it could not deliver: 503, empty body, and no
+ * Date header (real servers send one). A site's own 503 does not count.
+ */
+export function isProxyFailureResponse(statusCode: number, headers: Record<string, string[] | string> | undefined): boolean {
+  if (statusCode !== 503) return false;
+  return !Object.keys(headers ?? {}).some((k) => k.toLowerCase() === 'date');
+}
+
 /** The gate's decision for one request. */
 export function gateAllows(raw: string, tunnelOpen: boolean): boolean {
   let u: URL;

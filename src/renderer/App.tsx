@@ -29,7 +29,8 @@ export function App() {
   const [toast, setToast] = useState<string | null>(null);
   const [fullScreen, setFullScreen] = useState(false);
 
-  const locked = tunnel.status !== 'connected' && tunnel.status !== 'degraded';
+  // Same rule as the main process: pages are shown only while the tunnel answers.
+  const locked = tunnel.status !== 'connected';
   const active = tabs.tabs.find((t) => t.id === tabs.activeId) ?? null;
 
   useEffect(() => {
@@ -77,7 +78,7 @@ export function App() {
       {tunnel.status === 'degraded' && (
         <div className="banner warn">
           <I.Warn />
-          <span>{tunnel.message} Страницы не загрузятся, пока связь не восстановится; мимо туннеля трафик не идёт.</span>
+          <span>{tunnel.message} Вкладки скрыты, пока связь не восстановится; мимо туннеля трафик не идёт.</span>
           <button className="btn small" onClick={() => run(() => api.tunnel.connect(tunnel.profileId))}>
             Переподключить
           </button>
@@ -187,13 +188,15 @@ function TabStrip({ tabs, onToast }: { tabs: TabsState; onToast: (s: string) => 
 function StatusPill({ tunnel, onClick }: { tunnel: TunnelState; onClick: () => void }) {
   const s = tunnel.status;
   const label =
-    s === 'connected' || s === 'degraded'
+    s === 'connected'
       ? `${flag(tunnel.exit?.country)} ${tunnel.exit?.ip ?? ''}`.trim() || tunnel.profileName
-      : s === 'connecting'
-        ? 'Подключение…'
-        : s === 'error'
-          ? 'Ошибка'
-          : 'Не подключено';
+      : s === 'degraded'
+        ? 'Туннель недоступен'
+        : s === 'connecting'
+          ? 'Подключение…'
+          : s === 'error'
+            ? 'Ошибка'
+            : 'Не подключено';
   return (
     <button className={`pill ${s}`} onClick={onClick} title={tunnel.profileName ?? 'Серверы'}>
       <span className="dot" />
@@ -386,6 +389,30 @@ function LockScreen(props: {
   const { tunnel, profiles, run, openServers } = props;
   const selected = profiles.profiles.find((p) => p.id === profiles.selectedId);
   const connecting = tunnel.status === 'connecting';
+  if (tunnel.status === 'degraded') {
+    return (
+      <div className="center">
+        <div className="card lock">
+          <div className="lock-icon warn">
+            <I.ShieldOff size={40} />
+          </div>
+          <h2>Туннель недоступен</h2>
+          <p>
+            Сервер «{tunnel.profileName}» перестал отвечать. Как только он снова ответит, вкладки вернутся сами. Можно
+            не ждать: переподключиться или выбрать другой сервер.
+          </p>
+          <div className="lock-actions">
+            <button className="btn primary big" onClick={() => run(() => api.tunnel.connect(tunnel.profileId))}>
+              Переподключить
+            </button>
+            <button className="btn ghost" onClick={openServers}>
+              Сменить сервер
+            </button>
+          </div>
+        </div>
+      </div>
+    );
+  }
   return (
     <div className="center">
       <div className="card lock">

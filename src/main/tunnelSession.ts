@@ -7,12 +7,15 @@
 //  2. Gate: every request is checked in webRequest.onBeforeRequest and cancelled unless the
 //     tunnel is verified up. Local and private addresses are always refused.
 //  3. UI: tabs are detached from the window while locked (see tabs.ts).
+// The session also watches page traffic for the signs of a dead server and reports them as
+// 'trouble'; the tunnel then verifies with its own probe (tunnel.ts).
 // Plus per-page hardening: WebRTC may not use UDP outside the proxy, permissions that
 // expose the device (location, camera, USB...) are denied, non-web schemes are blocked.
 
 import { app, session, type Session, type WebContents } from 'electron';
+import { EventEmitter } from 'node:events';
 import net from 'node:net';
-import { cleanUserAgent, gateAllows, isWebUrl } from './guard';
+import { cleanUserAgent, gateAllows, isProxyFailureResponse, isTunnelTroubleError, isWebUrl } from './guard';
 
 export { cleanUserAgent, isLocalHost, isWebUrl } from './guard';
 
@@ -25,7 +28,7 @@ export interface ProxyCreds {
 }
 
 const ALLOWED_PERMISSIONS = new Set(['clipboard-sanitized-write', 'fullscreen', 'pointerLock', 'window-management']);
-export class TunnelSession {
+export class TunnelSession extends EventEmitter<{ trouble: [] }> {
   readonly ses: Session;
   private open = false;
   private creds: ProxyCreds | null = null;
@@ -34,6 +37,7 @@ export class TunnelSession {
   private sinkholePort = 0;
 
   constructor() {
+    super();
     this.ses = session.fromPartition(TUNNEL_PARTITION);
   }
 
@@ -44,6 +48,15 @@ export class TunnelSession {
 
     // Layer 2: the gate.
     ses.webRequest.onBeforeRequest((details, cb) => cb({ cancel: !this.allows(details.url) }));
+
+    // Page traffic is the first to notice a dead server: Xray answers plain http with an
+    // empty 503 and drops https streams. Only a hint; the tunnel confirms it with a probe.
+    ses.webRequest.onCompleted((d) => {
+      if (this.open && isProxyFailureResponse(d.statusCode, d.responseHeaders)) this.emit('trouble');
+    });
+    ses.webRequest.onErrorOccurred((d) => {
+      if (this.open && isTunnelTroubleError(d.error)) this.emit('trouble');
+    });
 
     ses.setPermissionRequestHandler((_wc, permission, cb) => cb(ALLOWED_PERMISSIONS.has(permission)));
     ses.setPermissionCheckHandler((_wc, permission) => ALLOWED_PERMISSIONS.has(permission));
