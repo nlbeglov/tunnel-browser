@@ -74,6 +74,7 @@ const api: BridgeApi = {
       return () => ipcRenderer.removeListener('ui:open-panel', fn);
     },
     onFullScreen: (cb) => listen('ui:fullscreen', cb),
+    setTitleBarColors: (colors) => ipcRenderer.send('ui:titlebar-colors', colors),
     onError: (cb) => listen('ui:error', cb),
   },
 };

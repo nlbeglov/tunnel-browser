@@ -733,19 +733,33 @@ textarea {
   height: 24px;
 }
 
-/* ---- macOS window: tabs next to the traffic lights, strip drags the window ---- */
+/* ---- Chrome-style window: the tab strip is the title bar and drags the window ---- */
+.tabstrip {
+  -webkit-app-region: drag;
+}
+
+.tab,
+.tabstrip button {
+  -webkit-app-region: no-drag;
+}
+
+/* macOS: tabs start after the traffic lights */
 .app.mac .tabstrip {
   padding-left: 82px;
-  -webkit-app-region: drag;
 }
 
 .app.mac.fullscreen .tabstrip {
   padding-left: 8px;
 }
 
-.app.mac .tab,
-.app.mac .tabstrip button {
-  -webkit-app-region: no-drag;
+/* Windows: minimise / maximise / close are drawn over the right end of the strip
+   (window controls overlay); tabs stop before them. */
+.app.wco .tabstrip {
+  padding-right: calc(100vw - env(titlebar-area-x, 0px) - env(titlebar-area-width, calc(100vw - 146px)) + 8px);
+}
+
+.app.wco.fullscreen .tabstrip {
+  padding-right: 8px;
 }
 
 /* ---- tab drag & drop ---- */

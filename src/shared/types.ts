@@ -237,6 +237,8 @@ export interface BridgeApi {
     setSettings(patch: Partial<BrowserSettings>): Promise<BrowserSettings>;
     onOpenPanel(cb: (panel: PanelName, bookmarkId?: string) => void): () => void;
     onFullScreen(cb: (full: boolean) => void): () => void;
+    /** Windows: colours for the window buttons drawn over the tab strip */
+    setTitleBarColors(colors: { color: string; symbolColor: string }): void;
     onError(cb: (message: string) => void): () => void;
   };
 }
