@@ -12,14 +12,17 @@ import {
 import { randomUUID } from 'node:crypto';
 import { join } from 'node:path';
 import { pathToFileURL } from 'node:url';
-import type { BrowserSettings, ImportResult, OpenMode, PanelName, Subscription, TunnelState, UiRect } from '../shared/types';
+import type { BrowserSettings, ImportResult, OpenMode, PanelName, ServerProfile, Subscription, TunnelState, UiRect } from '../shared/types';
 import { BrowserData } from './browserData';
+import { identityFor } from './identity';
+import type { UaMetadata } from './pageGuard';
 import { parseMany } from './links';
 import { Store } from './store';
 import { fetchSubscription, validateSubscriptionUrl } from './subscription';
 import { Tabs } from './tabs';
 import { Tunnel } from './tunnel';
 import { TunnelSession, cleanUserAgent, hardenWebContents } from './tunnelSession';
+import { startUpdateProxy } from './updateProxy';
 import { APP_REPO, Updater, releaseHistory } from './updater';
 import { coreFileName, coreVersion, killStaleCore } from './xray';
 
@@ -35,6 +38,14 @@ if (!app.requestSingleInstanceLock()) {
   app.quit();
 } else {
   app.userAgentFallback = cleanUserAgent(app.userAgentFallback);
+  // Behind a proxy Chromium still looked up the names of visited sites through this
+  // computer's DNS, which shows them to the internet provider. No lookups at all: pages'
+  // names are resolved by the VPN server, updates go through their own proxy (updateProxy.ts).
+  app.commandLine.appendSwitch('host-resolver-rules', 'MAP * ~NOTFOUND , EXCLUDE 127.0.0.1');
+  // Shared workers outlive their pages, where the time zone cannot be replaced (pageGuard.ts).
+  app.commandLine.appendSwitch('disable-blink-features', 'SharedWorker');
+  // Speech synthesis lists this computer's voices, which give away its languages.
+  app.commandLine.appendSwitch('disable-speech-api');
   if (process.platform === 'win32') app.setAppUserModelId('app.tunnelbrowser.desktop');
   void app.whenReady().then(main);
 }
@@ -55,12 +66,17 @@ async function main() {
     cb({ cancel: !/^(file|devtools|data|blob):/i.test(d.url) }),
   );
   session.defaultSession.setPermissionRequestHandler((_wc, _p, cb) => cb(false));
+  // Otherwise Chromium fetches spell-check dictionaries from Google for the UI.
+  session.defaultSession.setSpellCheckerEnabled(false);
 
   const gate = new TunnelSession();
   await gate.init();
   app.on('web-contents-created', (_e, wc) => {
     wc.on('will-attach-webview', (ev) => ev.preventDefault());
-    if (wc.session === gate.ses) hardenWebContents(wc);
+    if (wc.session !== gate.ses) return;
+    hardenWebContents(wc);
+    // Blocked from the network until its time zone and language are replaced (pageGuard.ts).
+    gate.guard.track(wc);
   });
 
   // Errors from before the UI exists are kept and shown once it has loaded.
@@ -72,7 +88,15 @@ async function main() {
   const store = new Store(onStorageError);
   const browser = new BrowserData(onStorageError);
   await Promise.all([store.load(), browser.load()]);
-  const tunnel = new Tunnel(gate, corePath, pidFile);
+  const tunnel = new Tunnel(gate, corePath, pidFile, {
+    // Pages get the exit's time zone before the gate opens, so none of them can reach a site
+    // through the new exit with the old values.
+    beforeOpen: async (exit) => {
+      const identity = identityFor(exit.country, exit.colo);
+      await gate.guard.setIdentity(identity);
+      return { timezone: identity.timezone };
+    },
+  });
   const updater = new Updater(() => tunnel.disconnect());
 
   const win = new BrowserWindow({
@@ -99,7 +123,7 @@ async function main() {
   win.webContents.setWindowOpenHandler(() => ({ action: 'deny' }));
   win.once('ready-to-show', () => win.show());
 
-  const tabs = new Tabs(win, gate.ses);
+  const tabs = new Tabs(win, gate.ses, gate.guard);
   const send = (channel: string, ...payload: unknown[]) => {
     if (!win.isDestroyed()) win.webContents.send(channel, ...payload);
   };
@@ -119,6 +143,7 @@ async function main() {
   tunnel.on('change', (s: TunnelState) => {
     tabs.setLocked(tunnel.locked);
     send('tunnel:changed', s);
+    if (s.status === 'connected' && s.profileId) browser.lastServerId = s.profileId;
   });
   tabs.on('change', (s) => {
     send('tabs:changed', s);
@@ -207,10 +232,47 @@ async function main() {
   });
 
   handle('tunnel:get', () => tunnel.state);
-  handle('tunnel:connect', (id: unknown) => {
+  /** Pages forget everything they knew: storage is wiped and no page script survives. */
+  const forgetSites = async () => {
+    tabs.resetAll();
+    await gate.clearData();
+  };
+
+  /**
+   * Another server means another IP. Sites that know you by cookies or a login would see the
+   * new IP next to them and link the two, so ask first: nothing reaches the new exit before
+   * the answer, and with "clear" the old identity is gone before the tunnel switches.
+   */
+  async function confirmServerSwitch(profile: ServerProfile): Promise<boolean> {
+    const last = browser.lastServerId;
+    if (!last || last === profile.id || !browser.settings().warnOnServerSwitch) return true;
+    const cookies = await gate.ses.cookies.get({}).catch(() => []);
+    if (!cookies.length) return true;
+    const r = await dialog.showMessageBox(win, {
+      type: 'warning',
+      buttons: ['Очистить и подключить', 'Подключить без очистки', 'Отмена'],
+      defaultId: 0,
+      cancelId: 2,
+      noLink: true,
+      message: `Подключиться к «${profile.name}» — это новый IP-адрес`,
+      detail:
+        'Сайты, где вы вошли в аккаунт или которые вас запомнили по куки, увидят новый адрес рядом со старыми куки ' +
+        'и поймут, что это тот же человек.\n\n' +
+        '«Очистить и подключить» удалит куки, входы и данные сайтов, а открытые вкладки загрузятся заново. ' +
+        'Пока вы не ответите, через новый сервер ничего не уходит.',
+      checkboxLabel: 'Больше не спрашивать (включить снова: ⋮ → Настройки)',
+    });
+    if (r.response === 2) return false;
+    if (r.checkboxChecked) browser.setSettings({ warnOnServerSwitch: false });
+    if (r.response === 0) await forgetSites();
+    return true;
+  }
+
+  handle('tunnel:connect', async (id: unknown) => {
     const profile = store.profile(id === undefined ? store.selectedId : str(id));
     if (!profile) throw new Error('сначала добавьте сервер');
     store.select(profile.id);
+    if (!(await confirmServerSwitch(profile))) return;
     void tunnel.connect(profile);
   });
   handle('tunnel:disconnect', () => tunnel.disconnect());
@@ -324,7 +386,7 @@ async function main() {
     xrayVersion: await xrayVersion,
     repo: APP_REPO,
   }));
-  handle('app:clear-data', () => gate.clearData());
+  handle('app:clear-data', () => forgetSites());
   handle('app:settings', () => browser.settings());
   handle('app:set-settings', (patch: unknown) => browser.setSettings((patch ?? {}) as Partial<BrowserSettings>));
 
@@ -336,12 +398,15 @@ async function main() {
     barShown: browser.settings().showBookmarksBar,
   });
   await win.loadURL(uiUrl);
+  // Client hints exactly as this browser reports them, for pages whose language is replaced.
+  gate.guard.setMetadata(await readUaMetadata(win));
   reportError = (message: string) => send('ui:error', message);
   for (const m of earlyErrors.splice(0)) reportError(m);
 
   const last = browser.session();
   if (last?.tabs.length) tabs.restore(last.tabs, last.activeIndex);
   else tabs.create();
+  if (app.isPackaged) await routeUpdatesToGitHub();
   updater.start();
 
   // Refresh subscriptions that are due, in the background.
@@ -389,6 +454,35 @@ async function main() {
   if (__SMOKE__ && process.env.TB_SMOKE) {
     const { runSmoke } = await import('./smoke');
     await runSmoke({ win, gate, tunnel, tabs, store, browser });
+  }
+}
+
+/**
+ * electron-updater's own session (its NET_SESSION_NAME) goes straight to GitHub through
+ * updateProxy.ts. Chromium applies a new proxy with a delay, so wait until it reports it;
+ * before that, a check would go DIRECT and fail (DNS is off), not leak.
+ */
+async function routeUpdatesToGitHub(): Promise<void> {
+  const updates = await startUpdateProxy();
+  const ses = session.fromPartition('electron-updater', { cache: false });
+  const want = `PROXY 127.0.0.1:${updates.port}`;
+  await ses.setProxy({ mode: 'fixed_servers', proxyRules: `http://127.0.0.1:${updates.port}` });
+  for (let i = 0; i < 40; i++) {
+    if ((await ses.resolveProxy('https://github.com/')).trim() === want) return;
+    await new Promise((r) => setTimeout(r, 50));
+  }
+}
+
+/** navigator.userAgentData of this browser, read in the UI page (a secure context). */
+async function readUaMetadata(win: BrowserWindow): Promise<UaMetadata | null> {
+  try {
+    return await win.webContents.executeJavaScript(`navigator.userAgentData
+      .getHighEntropyValues(['architecture', 'bitness', 'model', 'platformVersion', 'fullVersionList', 'wow64'])
+      .then((v) => ({ brands: v.brands, fullVersionList: v.fullVersionList, platform: v.platform,
+        platformVersion: v.platformVersion, architecture: v.architecture, model: v.model, mobile: v.mobile,
+        bitness: v.bitness, wow64: v.wow64 }))`);
+  } catch {
+    return null;
   }
 }
 

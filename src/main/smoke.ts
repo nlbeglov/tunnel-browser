@@ -1,11 +1,14 @@
 // End-to-end self-test of the kill-switch inside real Electron. Compiled in only with
 // `node scripts/build.mjs --smoke` (see scripts/smoke.mjs); never part of a release build.
 
-import { BrowserWindow, app, type WebContents } from 'electron';
+import { BrowserWindow, app, netLog, type WebContents } from 'electron';
 import { writeFileSync } from 'node:fs';
 import http from 'node:http';
+import { readFileSync } from 'node:fs';
 import { join } from 'node:path';
+import { SITE_LANGUAGES, SITE_LOCALE, exitTimezone } from './identity';
 import { parseMany } from './links';
+import { dnsLookups } from './netlog';
 import type { BrowserData } from './browserData';
 import type { Store } from './store';
 import type { Tabs } from './tabs';
@@ -63,8 +66,28 @@ const ICE_PROBE = `(async () => {
 
 const udpCandidates = (list: string[]) => list.filter((c) => (c.split(' ')[2] ?? '').toLowerCase() === 'udp');
 
+/** What a VPN-detecting script reads; run in pages, frames and workers. */
+const READ_IDENTITY = `({
+  tz: Intl.DateTimeFormat().resolvedOptions().timeZone,
+  locale: Intl.DateTimeFormat().resolvedOptions().locale,
+  languages: (self.navigator.languages || []).join(','),
+  speech: typeof self.speechSynthesis,
+  sharedWorker: typeof self.SharedWorker,
+})`;
+/** The same, read in a dedicated worker the page starts. */
+const WORKER_IDENTITY = `new Promise((resolve, reject) => {
+  const code = 'postMessage(' + ${JSON.stringify(READ_IDENTITY)} + ')';
+  const w = new Worker(URL.createObjectURL(new Blob([code], { type: 'text/javascript' })));
+  w.onmessage = (e) => resolve(e.data);
+  w.onerror = (e) => reject(new Error('worker: ' + e.message));
+  setTimeout(() => reject(new Error('worker: timeout')), 5000);
+})`;
+
 export async function runSmoke(ctx: Ctx): Promise<void> {
   const outDir = process.env.TB_SMOKE_OUT ?? app.getPath('temp');
+  // Every DNS lookup Chromium makes on this computer ends up in the net log.
+  const netlogPath = join(outDir, 'netlog.json');
+  await netLog.startLogging(netlogPath, { captureMode: 'default' });
   const results: Array<{ name: string; ok: boolean; detail?: string }> = [];
   const check = (name: string, ok: boolean, detail?: string) => {
     results.push({ name, ok, detail });
@@ -148,6 +171,23 @@ export async function runSmoke(ctx: Ctx): Promise<void> {
     );
     check('шрифт с флагами загружен (флаги на Windows)', flagFont > 0, `найдено начертаний: ${flagFont}`);
 
+    // --- 3a. what a VPN-detecting site reads: the exit's time zone and a neutral language,
+    // in the page, in a dedicated worker and in a frame of another site (its own process)
+    const exit = ctx.tunnel.state.exit;
+    const wantTz = exitTimezone(exit?.country, exit?.colo);
+    type Identity = { tz: string; locale: string; languages: string; speech: string; sharedWorker: string };
+    const same = (r: Identity | null) =>
+      !!r && r.tz === wantTz && r.locale === SITE_LOCALE && r.languages === SITE_LANGUAGES && r.speech === 'undefined' && r.sharedWorker === 'undefined';
+    const inPage: Identity = await page.executeJavaScript(READ_IDENTITY);
+    check('страница видит часовой пояс страны сервера и нейтральный язык', same(inPage), `${JSON.stringify(inPage)}; ожидали ${wantTz} (${exit?.country}/${exit?.colo})`);
+    const inWorker: Identity | null = await page.executeJavaScript(WORKER_IDENTITY).catch((e: Error) => ({ error: e.message }) as never);
+    check('то же видит воркер страницы', same(inWorker), JSON.stringify(inWorker));
+    await page.executeJavaScript(`new Promise((r) => { const f = document.createElement('iframe'); f.onload = r; f.src = 'https://example.com/'; document.body.appendChild(f); setTimeout(r, 8000); })`);
+    const frame = page.mainFrame.frames.find((f) => f.url.startsWith('https://example.com'));
+    const inFrame = frame ? ((await frame.executeJavaScript(READ_IDENTITY).catch(() => null)) as Identity | null) : null;
+    check('то же видит фрейм другого сайта (отдельный процесс)', same(inFrame), frame ? JSON.stringify(inFrame) : 'фрейм не загрузился');
+    check('часовой пояс показан в интерфейсе', exit?.timezone === wantTz, exit?.timezone);
+
     // --- 3b. bookmarks
     const bm = ctx.browser.addBookmark(TRACE, 'Cloudflare trace');
     const again = ctx.browser.addBookmark(`${TRACE}#x`, 'дубль');
@@ -219,6 +259,14 @@ export async function runSmoke(ctx: Ctx): Promise<void> {
     check('самопроверка завершилась без исключений', false, e instanceof Error ? e.stack : String(e));
   } finally {
     canary.close();
+    // --- 8. DNS: names of visited sites are resolved by the VPN server, never here
+    try {
+      await netLog.stopLogging();
+      const looked = dnsLookups(JSON.parse(readFileSync(netlogPath, 'utf8')));
+      check('браузер не делает DNS-запросов на этом компьютере (нет утечки DNS)', looked.length === 0, looked.slice(0, 10).join(', ') || 'ни одного');
+    } catch (e) {
+      check('журнал сети прочитан', false, e instanceof Error ? e.message : String(e));
+    }
     writeFileSync(join(outDir, 'results.json'), JSON.stringify(results, null, 2));
     await ctx.tunnel.disconnect().catch(() => {});
     app.exit(results.every((r) => r.ok) ? 0 : 1);

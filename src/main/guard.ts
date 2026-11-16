@@ -77,8 +77,11 @@ export function isProxyFailureResponse(statusCode: number, headers: Record<strin
   return !Object.keys(headers ?? {}).some((k) => k.toLowerCase() === 'date');
 }
 
-/** The gate's decision for one request. */
-export function gateAllows(raw: string, tunnelOpen: boolean): boolean {
+/**
+ * The gate's decision for one request. `pageCovered` is false for a page whose time zone and
+ * language are not yet replaced (pageGuard.ts): it may not send anything at all.
+ */
+export function gateAllows(raw: string, tunnelOpen: boolean, pageCovered = true): boolean {
   let u: URL;
   try {
     u = new URL(raw);
@@ -87,6 +90,11 @@ export function gateAllows(raw: string, tunnelOpen: boolean): boolean {
   }
   if (NO_NETWORK_SCHEMES.has(u.protocol)) return true;
   if (!WEB_SCHEMES.has(u.protocol)) return false;
-  if (!tunnelOpen) return false;
+  if (!tunnelOpen || !pageCovered) return false;
   return !isLocalHost(u.hostname);
+}
+
+/** The script of a service worker: they outlive pages and are switched off in the browser. */
+export function isServiceWorkerScript(headers: Record<string, string>): boolean {
+  return Object.keys(headers).some((k) => k.toLowerCase() === 'service-worker');
 }

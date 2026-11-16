@@ -86,6 +86,8 @@ export function getViaProxy(proxy: ProxyEndpoint, host: string, path: string, ti
 export interface ExitInfo {
   ip: string;
   country?: string;
+  /** Cloudflare data centre that answered (IATA code): the exit's region */
+  colo?: string;
   latencyMs: number;
 }
 
@@ -123,7 +125,8 @@ export async function exitInfo(proxy: ProxyEndpoint): Promise<ExitInfo> {
     // Body may be chunked; the key=value lines survive either way.
     const ip = /^ip=(.+)$/m.exec(r.body)?.[1]?.trim();
     const loc = /^loc=(.+)$/m.exec(r.body)?.[1]?.trim();
-    return { ip: ip ?? '?', country: loc, latencyMs };
+    const colo = /^colo=(.+)$/m.exec(r.body)?.[1]?.trim();
+    return { ip: ip ?? '?', country: loc, colo, latencyMs };
   } catch {
     return { ip: '?', latencyMs };
   }
