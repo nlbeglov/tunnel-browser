@@ -160,6 +160,17 @@ DNS-запросов (по сетевому журналу Chromium). Скрин
 - Потом: Linux, Android (WebView + `ProxyController` + libXray), iOS (WKWebView +
   `proxyConfigurations`, iOS 17+).
 
+## Окно
+
+Как в Chrome, заголовка нет: полоса вкладок сама служит заголовком (`-webkit-app-region: drag`,
+вкладки и кнопки — `no-drag`). На macOS вкладки начинаются после «светофора»
+(`titleBarStyle: 'hiddenInset'`). На Windows кнопки окна рисует Electron поверх правого края
+полосы (`titleBarOverlay`, Window Controls Overlay); вкладки заканчиваются перед ними по
+`env(titlebar-area-width)`. Цвета кнопок интерфейс берёт из своих CSS-переменных и присылает
+при смене темы (`ui:titlebar-colors`). Строка меню на Windows не показывается никогда
+(`setMenuBarVisibility(false)`): меню нужно только ради сочетаний клавиш, а с автоскрытием её
+вызывал Alt при переключении раскладки.
+
 ## Устройство проекта
 
 ```

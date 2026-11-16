@@ -5,6 +5,7 @@ import {
   clipboard,
   dialog,
   ipcMain,
+  nativeTheme,
   session,
   type IpcMainEvent,
   type IpcMainInvokeEvent,
@@ -30,6 +31,8 @@ declare const __SMOKE__: boolean;
 
 const OS_DIR: Record<string, string> = { win32: 'win', darwin: 'mac', linux: 'linux' };
 const isMac = process.platform === 'darwin';
+/** .tabstrip height in styles.css: the window buttons are drawn at the same height */
+const TAB_STRIP_HEIGHT = 38;
 const OPEN_MODES: OpenMode[] = ['current', 'new-tab', 'background'];
 
 if (__SMOKE__ && process.env.TB_SMOKE_USERDATA) app.setPath('userData', process.env.TB_SMOKE_USERDATA);
@@ -107,9 +110,11 @@ async function main() {
     show: false,
     title: 'Tunnel Browser',
     backgroundColor: '#15171c',
-    autoHideMenuBar: true,
-    // macOS: Chrome-style window, the tab strip sits next to the traffic lights.
-    ...(isMac ? { titleBarStyle: 'hiddenInset' as const, trafficLightPosition: { x: 14, y: 13 } } : {}),
+    // Chrome-style window: no title bar, the tab strip sits next to the window buttons
+    // (traffic lights on macOS; minimise / maximise / close drawn over the strip elsewhere).
+    ...(isMac
+      ? { titleBarStyle: 'hiddenInset' as const, trafficLightPosition: { x: 14, y: 13 } }
+      : { titleBarStyle: 'hidden' as const, titleBarOverlay: titleBarColors() }),
     webPreferences: {
       preload: join(__dirname, '../preload/index.js'),
       sandbox: true,
@@ -322,6 +327,16 @@ async function main() {
   ipcMain.on('tabs:overlay', (e, open: unknown) => {
     if (trusted(e)) tabs.setOverlay(open === true);
   });
+  // The UI reports the colours of its tab strip (light or dark theme): the window buttons
+  // drawn over it take the same ones.
+  ipcMain.on('ui:titlebar-colors', (e, c: unknown) => {
+    if (!trusted(e) || isMac || !c || typeof c !== 'object') return;
+    const { color, symbolColor } = c as { color?: unknown; symbolColor?: unknown };
+    const hex = (v: unknown) => typeof v === 'string' && /^#[0-9a-f]{6}$/i.test(v.trim());
+    if (hex(color) && hex(symbolColor)) {
+      win.setTitleBarOverlay({ height: TAB_STRIP_HEIGHT, color: String(color).trim(), symbolColor: String(symbolColor).trim() });
+    }
+  });
 
   // ---- bookmarks
   const openBookmark = (id: string, how: OpenMode) => {
@@ -397,6 +412,9 @@ async function main() {
     toggleBar: (on) => browser.setSettings({ showBookmarksBar: on }),
     barShown: browser.settings().showBookmarksBar,
   });
+  // Windows: the menu only carries the keyboard shortcuts; its bar is never shown. With
+  // auto-hide, Alt (part of the Alt+Shift layout switch) kept popping it up.
+  if (!isMac) win.setMenuBarVisibility(false);
   await win.loadURL(uiUrl);
   // Client hints exactly as this browser reports them, for pages whose language is replaced.
   gate.guard.setMetadata(await readUaMetadata(win));
@@ -484,6 +502,15 @@ async function readUaMetadata(win: BrowserWindow): Promise<UaMetadata | null> {
   } catch {
     return null;
   }
+}
+
+/**
+ * Window buttons over the tab strip, until the UI reports its real colours (ui:titlebar-colors):
+ * same height as the strip and its colours in styles.css.
+ */
+function titleBarColors(): Electron.TitleBarOverlay {
+  const dark = nativeTheme.shouldUseDarkColors;
+  return { height: TAB_STRIP_HEIGHT, color: dark ? '#15171c' : '#eef0f4', symbolColor: dark ? '#e8eaee' : '#1b1e24' };
 }
 
 /** Updates replace the app in place, which needs a writable, non-translocated location. */

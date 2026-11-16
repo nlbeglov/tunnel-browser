@@ -47,6 +47,18 @@ export function App() {
     [],
   );
   useEffect(() => api.app.onFullScreen(setFullScreen), []);
+  useEffect(() => {
+    if (isMac) return;
+    // The window buttons are drawn by the system over the strip: give them the strip's colours.
+    const mq = matchMedia('(prefers-color-scheme: dark)');
+    const report = () => {
+      const css = getComputedStyle(document.documentElement);
+      api.app.setTitleBarColors({ color: css.getPropertyValue('--bg').trim(), symbolColor: css.getPropertyValue('--text').trim() });
+    };
+    report();
+    mq.addEventListener('change', report);
+    return () => mq.removeEventListener('change', report);
+  }, []);
   useEffect(() => api.app.onError(setToast), []);
 
   const run = useCallback<Run>(async (fn) => {
@@ -62,7 +74,7 @@ export function App() {
   };
 
   return (
-    <div className={`app ${isMac ? 'mac' : ''} ${fullScreen ? 'fullscreen' : ''}`}>
+    <div className={`app ${isMac ? 'mac' : 'wco'} ${fullScreen ? 'fullscreen' : ''}`}>
       <TabStrip tabs={tabs} onToast={setToast} />
       <Toolbar
         tab={active}
@@ -123,12 +135,7 @@ function TabStrip({ tabs, onToast }: { tabs: TabsState; onToast: (s: string) => 
     setDropAt(null);
   };
   return (
-    <div
-      className="tabstrip"
-      onDoubleClick={(e) => {
-        if (e.target === e.currentTarget && !isMac) void api.tabs.create();
-      }}
-    >
+    <div className="tabstrip">
       {tabs.tabs.map((t, i) => (
         <div
           key={t.id}
