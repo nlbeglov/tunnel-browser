@@ -1,5 +1,5 @@
 import { describe, expect, it } from 'vitest';
-import { cleanUserAgent, gateAllows, isLocalHost } from '../src/main/guard';
+import { cleanUserAgent, gateAllows, isLocalHost, isProxyFailureResponse, isTunnelTroubleError } from '../src/main/guard';
 import { inputToUrl } from '../src/main/url';
 import { parseTitle, parseUserinfo } from '../src/main/subscription';
 
@@ -67,6 +67,27 @@ describe('inputToUrl', () => {
   it('refuses non-web schemes', () => {
     expect(() => inputToUrl('file:///C:/Windows')).toThrow();
     expect(() => inputToUrl('chrome://settings')).toThrow();
+  });
+});
+
+describe('signs of a dead tunnel in page traffic', () => {
+  it.each(['net::ERR_CONNECTION_CLOSED', 'net::ERR_EMPTY_RESPONSE', 'net::ERR_TUNNEL_CONNECTION_FAILED', 'net::ERR_TIMED_OUT'])(
+    '%s counts',
+    (e) => expect(isTunnelTroubleError(e)).toBe(true),
+  );
+
+  // Our own block, a cancelled load and a broken page are not the tunnel's fault.
+  it.each(['net::ERR_BLOCKED_BY_CLIENT', 'net::ERR_ABORTED', 'net::ERR_CERT_DATE_INVALID', 'net::ERR_FILE_NOT_FOUND'])(
+    '%s does not count',
+    (e) => expect(isTunnelTroubleError(e)).toBe(false),
+  );
+
+  it("Xray's empty 503 counts, a site's own 503 does not", () => {
+    // Exactly what Xray's HTTP inbound sends when it cannot reach the server.
+    expect(isProxyFailureResponse(503, { Connection: ['close'], 'Proxy-Connection': ['close'], 'Content-Length': ['0'] })).toBe(true);
+    expect(isProxyFailureResponse(503, { date: ['Mon, 16 Nov 2026 10:21:42 GMT'], server: ['nginx'] })).toBe(false);
+    expect(isProxyFailureResponse(200, {})).toBe(false);
+    expect(isProxyFailureResponse(502, {})).toBe(false);
   });
 });
 

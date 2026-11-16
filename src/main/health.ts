@@ -94,19 +94,25 @@ const PROBES: Array<[string, string]> = [
   ['cp.cloudflare.com', '/generate_204'],
 ];
 
-/** Resolves when any probe returns 204 through the tunnel; rejects with the last error. */
-export async function probeTunnel(proxy: ProxyEndpoint, timeoutMs = 8000): Promise<number> {
-  let last: unknown;
-  for (const [host, path] of PROBES) {
-    try {
-      const r = await getViaProxy(proxy, host, path, timeoutMs);
-      if (r.status === 204) return r.ms;
-      last = new Error(`${host} ответил ${r.status}`);
-    } catch (e) {
+/**
+ * All probes run at once; resolves with the first 204 through the tunnel, rejects with the
+ * last error once every probe has failed. A dead server is reported within one timeout.
+ */
+export function probeTunnel(proxy: ProxyEndpoint, timeoutMs = 8000): Promise<number> {
+  return new Promise((resolve, reject) => {
+    let left = PROBES.length;
+    let last: unknown;
+    const failed = (e: unknown) => {
       last = e;
+      if (--left === 0) reject(last instanceof Error ? last : new Error('туннель не отвечает'));
+    };
+    for (const [host, path] of PROBES) {
+      getViaProxy(proxy, host, path, timeoutMs).then(
+        (r) => (r.status === 204 ? resolve(r.ms) : failed(new Error(`${host} ответил ${r.status}`))),
+        failed,
+      );
     }
-  }
-  throw last instanceof Error ? last : new Error('туннель не отвечает');
+  });
 }
 
 /** Learns the public exit IP and country as seen by the internet. */
