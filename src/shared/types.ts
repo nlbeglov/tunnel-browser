@@ -79,7 +79,14 @@ export interface TunnelState {
   profileName?: string;
   /** what the user should see when status is "error" or "degraded" */
   message?: string;
-  exit?: { ip: string; country?: string; latencyMs: number };
+  exit?: {
+    ip: string;
+    country?: string;
+    colo?: string;
+    latencyMs: number;
+    /** the time zone pages are given, matching the exit */
+    timezone?: string;
+  };
   since?: number;
 }
 
@@ -116,6 +123,8 @@ export interface BrowserSettings {
   /** reopen the tabs of the last session on start (they load once the tunnel is up) */
   restoreTabs: boolean;
   showBookmarksBar: boolean;
+  /** ask before switching to another server while sites hold cookies */
+  warnOnServerSwitch: boolean;
 }
 
 export type OpenMode = 'current' | 'new-tab' | 'background';

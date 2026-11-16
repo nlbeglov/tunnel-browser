@@ -465,6 +465,11 @@ function StartPage({ tab, tunnel, bookmarks, run }: { tab: TabInfo; tunnel: Tunn
             Защищено туннелем{tunnel.exit ? ` · ${flag(tunnel.exit.country)} ${tunnel.exit.ip} · ${tunnel.exit.latencyMs} мс` : ''}
           </span>
         </div>
+        {tunnel.exit?.timezone && (
+          <div className="start-note muted small" title="Так сайты не отличат вас от жителя страны сервера по часам и языку">
+            Для сайтов: часовой пояс {tunnel.exit.timezone} · язык English (US)
+          </div>
+        )}
         <form
           className="start-search"
           onSubmit={(e) => {
@@ -714,6 +719,17 @@ function SettingsPanel({ update, run, onClose }: { update: UpdateState; run: Run
                 />
                 <span>Показывать панель закладок (Ctrl/⌘+Shift+B)</span>
               </label>
+              <label className="toggle">
+                <input
+                  type="checkbox"
+                  checked={settings.warnOnServerSwitch}
+                  onChange={(e) => run(async () => setSettings(await api.app.setSettings({ warnOnServerSwitch: e.target.checked })))}
+                />
+                <span>
+                  Спрашивать про куки при смене сервера
+                  <span className="muted small">Сайты, где вы вошли, могут связать новый IP со старым по куки.</span>
+                </span>
+              </label>
             </>
           )}
         </section>
@@ -742,6 +758,11 @@ function SettingsPanel({ update, run, onClose }: { update: UpdateState; run: Run
             <li>Если ядро падает или вы отключаетесь, браузер блокируется до любых других действий.</li>
             <li>WebRTC не может слать UDP мимо туннеля; геолокация, камера, микрофон и устройства запрещены.</li>
             <li>Локальная сеть и этот компьютер (localhost, 192.168.x.x и т. п.) из браузера недоступны.</li>
+            <li>Имена сайтов разрешает VPN-сервер: браузер не делает DNS-запросов через вашего провайдера.</li>
+            <li>
+              Сайты видят часовой пояс страны сервера и английский язык, а не настройки этого компьютера. Страница, для
+              которой это не включилось, не может ничего отправить.
+            </li>
           </ul>
         </section>
         {info && <p className="muted small">{info.platform}{info.repo ? ` · github.com/${info.repo}` : ''}</p>}

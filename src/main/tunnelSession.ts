@@ -7,6 +7,8 @@
 //  2. Gate: every request is checked in webRequest.onBeforeRequest and cancelled unless the
 //     tunnel is verified up. Local and private addresses are always refused.
 //  3. UI: tabs are detached from the window while locked (see tabs.ts).
+// Pages also may not send anything until their time zone and language are replaced with
+// the exit's (pageGuard.ts); service workers are refused, since they outlive their pages.
 // The session also watches page traffic for the signs of a dead server and reports them as
 // 'trouble'; the tunnel then verifies with its own probe (tunnel.ts).
 // Plus per-page hardening: WebRTC may not use UDP outside the proxy, permissions that
@@ -15,7 +17,9 @@
 import { app, session, type Session, type WebContents } from 'electron';
 import { EventEmitter } from 'node:events';
 import net from 'node:net';
-import { cleanUserAgent, gateAllows, isProxyFailureResponse, isTunnelTroubleError, isWebUrl } from './guard';
+import { cleanUserAgent, gateAllows, isProxyFailureResponse, isServiceWorkerScript, isTunnelTroubleError, isWebUrl } from './guard';
+import { SITE_LANGUAGES } from './identity';
+import { PageGuard } from './pageGuard';
 
 export { cleanUserAgent, isLocalHost, isWebUrl } from './guard';
 
@@ -30,6 +34,8 @@ export interface ProxyCreds {
 const ALLOWED_PERMISSIONS = new Set(['clipboard-sanitized-write', 'fullscreen', 'pointerLock', 'window-management']);
 export class TunnelSession extends EventEmitter<{ trouble: [] }> {
   readonly ses: Session;
+  /** set up in init(): it needs the session's final user agent */
+  guard!: PageGuard;
   private open = false;
   private creds: ProxyCreds | null = null;
   /** kept referenced so the port stays ours for the app's lifetime */
@@ -43,11 +49,21 @@ export class TunnelSession extends EventEmitter<{ trouble: [] }> {
 
   async init(): Promise<void> {
     const ses = this.ses;
-    ses.setUserAgent(cleanUserAgent(ses.getUserAgent()));
+    const userAgent = cleanUserAgent(ses.getUserAgent());
+    // Accept-Language: the same neutral list for everyone, not this computer's languages.
+    ses.setUserAgent(userAgent, SITE_LANGUAGES);
     ses.setSpellCheckerEnabled(false);
+    this.guard = new PageGuard(userAgent);
 
     // Layer 2: the gate.
-    ses.webRequest.onBeforeRequest((details, cb) => cb({ cancel: !this.allows(details.url) }));
+    ses.webRequest.onBeforeRequest((details, cb) => cb({ cancel: !this.allows(details.url, details.webContentsId) }));
+    // Service workers keep running after their pages close, where nothing covers their time
+    // zone; registration fails as if the script could not be fetched. Older versions may
+    // have left some registered.
+    ses.webRequest.onBeforeSendHeaders((details, cb) =>
+      cb(isServiceWorkerScript(details.requestHeaders) ? { cancel: true } : { requestHeaders: details.requestHeaders }),
+    );
+    await ses.clearStorageData({ storages: ['serviceworkers'] }).catch(() => {});
 
     // Page traffic is the first to notice a dead server: Xray answers plain http with an
     // empty 503 and drops https streams. Only a hint; the tunnel confirms it with a probe.
@@ -110,8 +126,8 @@ export class TunnelSession extends EventEmitter<{ trouble: [] }> {
   }
 
   /** Is this request allowed to leave right now? */
-  allows(raw: string): boolean {
-    return gateAllows(raw, this.open);
+  allows(raw: string, webContentsId?: number): boolean {
+    return gateAllows(raw, this.open, webContentsId === undefined || this.guard.isReady(webContentsId));
   }
 
   private async applyProxy(port: number): Promise<void> {

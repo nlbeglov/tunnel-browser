@@ -21,9 +21,11 @@ interface Data {
   session?: { tabs: SessionTab[]; activeIndex: number };
   /** the user said no to "move to Applications" (macOS) */
   declinedMoveToApplications?: boolean;
+  /** the server of the last working connection: switching away from it means a new IP */
+  lastServerId?: string;
 }
 
-const DEFAULTS: Data = { version: 1, bookmarks: [], settings: { restoreTabs: true, showBookmarksBar: true } };
+const DEFAULTS: Data = { version: 1, bookmarks: [], settings: { restoreTabs: true, showBookmarksBar: true, warnOnServerSwitch: true } };
 
 export class BrowserData extends EventEmitter<{ bookmarks: [BookmarksState]; settings: [BrowserSettings] }> {
   private data: Data = structuredClone(DEFAULTS);
@@ -110,6 +112,7 @@ export class BrowserData extends EventEmitter<{ bookmarks: [BookmarksState]; set
     const next = { ...this.data.settings };
     if (typeof patch.restoreTabs === 'boolean') next.restoreTabs = patch.restoreTabs;
     if (typeof patch.showBookmarksBar === 'boolean') next.showBookmarksBar = patch.showBookmarksBar;
+    if (typeof patch.warnOnServerSwitch === 'boolean') next.warnOnServerSwitch = patch.warnOnServerSwitch;
     this.data.settings = next;
     if (!next.restoreTabs) delete this.data.session;
     this.save('settings');
@@ -122,6 +125,16 @@ export class BrowserData extends EventEmitter<{ bookmarks: [BookmarksState]; set
 
   set declinedMoveToApplications(v: boolean) {
     this.data.declinedMoveToApplications = v;
+    this.save('quiet');
+  }
+
+  get lastServerId(): string | undefined {
+    return this.data.lastServerId;
+  }
+
+  set lastServerId(id: string | undefined) {
+    if (this.data.lastServerId === id) return;
+    this.data.lastServerId = id;
     this.save('quiet');
   }
 

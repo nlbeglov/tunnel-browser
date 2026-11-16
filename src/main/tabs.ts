@@ -7,6 +7,7 @@ import { BrowserWindow, Menu, WebContentsView, clipboard, type Rectangle, type S
 import { EventEmitter } from 'node:events';
 import type { OpenMode, TabInfo, TabsState } from '../shared/types';
 import { isWebUrl } from './guard';
+import type { PageGuard } from './pageGuard';
 import { inputToUrl, loadErrorText } from './url';
 
 export interface TabEntry {
@@ -22,6 +23,8 @@ interface Tab {
   /** restored or opened while locked: loads when it is shown with the tunnel up */
   pending?: TabEntry;
   error?: string;
+  /** resolves once the page guard covers this tab; nothing loads before that */
+  covered: Promise<void>;
 }
 
 const MAX_CLOSED = 25;
@@ -42,6 +45,7 @@ export class Tabs extends EventEmitter<{ change: [TabsState] }> {
   constructor(
     private readonly win: BrowserWindow,
     private readonly ses: Session,
+    private readonly guard: PageGuard,
   ) {
     super();
   }
@@ -115,6 +119,15 @@ export class Tabs extends EventEmitter<{ change: [TabsState] }> {
   }
 
   private newTab(position: number): Tab {
+    const tab = { id: this.nextId++, started: false } as Tab;
+    this.attachNewView(tab);
+    this.tabs.set(tab.id, tab);
+    this.order.splice(Math.max(0, Math.min(position, this.order.length)), 0, tab.id);
+    return tab;
+  }
+
+  /** A fresh page for the tab, covered by the page guard before anything can load in it. */
+  private attachNewView(tab: Tab) {
     const view = new WebContentsView({
       webPreferences: {
         session: this.ses,
@@ -128,11 +141,42 @@ export class Tabs extends EventEmitter<{ change: [TabsState] }> {
       },
     });
     view.setBackgroundColor('#ffffff');
-    const tab: Tab = { id: this.nextId++, view, started: false };
-    this.tabs.set(tab.id, tab);
-    this.order.splice(Math.max(0, Math.min(position, this.order.length)), 0, tab.id);
+    const covered = this.guard.protect(view.webContents);
+    tab.view = view;
+    tab.covered = covered;
+    covered.catch((e) => {
+      if (tab.view !== view) return;
+      tab.error = `Не удалось скрыть часовой пояс и язык этого компьютера (${e instanceof Error ? e.message : e}). Страница не загружена.`;
+      this.layout();
+      this.changed();
+    });
     this.wire(tab);
-    return tab;
+  }
+
+  /**
+   * Every open page is dropped from memory and its tab comes back unloaded, like a restored
+   * one: no script of the old pages keeps running with what it knew (used when site data is
+   * cleared, e.g. before switching to another server).
+   */
+  resetAll() {
+    for (const p of this.popups) if (!p.isDestroyed()) p.destroy();
+    for (const id of this.order) {
+      const tab = this.tabs.get(id)!;
+      const entry = this.entry(tab);
+      const old = tab.view;
+      if (this.attached === old) {
+        this.win.contentView.removeChildView(old);
+        this.attached = null;
+      }
+      this.attachNewView(tab);
+      if (!old.webContents.isDestroyed()) old.webContents.close();
+      tab.started = false;
+      tab.error = undefined;
+      tab.pending = entry ?? undefined;
+    }
+    this.loadPendingIfShown();
+    this.layout();
+    this.changed();
   }
 
   private afterActive(): number {
@@ -189,15 +233,28 @@ export class Tabs extends EventEmitter<{ change: [TabsState] }> {
     tab.pending = undefined;
     tab.started = true;
     tab.error = undefined;
-    tab.view.webContents.loadURL(url).catch(() => {
-      /* reported through did-fail-load */
-    });
+    this.load(tab, url);
+  }
+
+  /** Loads only once the guard covers the tab (see pageGuard.ts). */
+  private load(tab: Tab, url: string) {
+    tab.covered.then(
+      () => {
+        if (!tab.view.webContents.isDestroyed()) tab.view.webContents.loadURL(url).catch(() => {});
+      },
+      () => {
+        /* the tab shows why */
+      },
+    );
   }
 
   private wire(tab: Tab) {
     const wc = tab.view.webContents;
     const update = () => this.changed();
+    /** after resetAll() a tab has a new page; the old one's last events are ignored */
+    const current = () => tab.view.webContents === wc;
     wc.on('did-start-navigation', (d) => {
+      if (!current()) return;
       if (d.isMainFrame && !d.isSameDocument) {
         tab.error = undefined;
         this.layout();
@@ -210,12 +267,13 @@ export class Tabs extends EventEmitter<{ change: [TabsState] }> {
     wc.on('did-start-loading', update);
     wc.on('did-stop-loading', update);
     wc.on('did-fail-load', (_e, code, desc, _url, isMainFrame) => {
-      if (!isMainFrame || code === -3) return; // -3: aborted by a new navigation
+      if (!current() || !isMainFrame || code === -3) return; // -3: aborted by a new navigation
       tab.error = loadErrorText(code, desc);
       this.layout();
       update();
     });
     wc.on('render-process-gone', (_e, d) => {
+      if (!current()) return;
       tab.error = `Страница аварийно закрылась (${d.reason}). Перезагрузите её.`;
       this.layout();
       update();
@@ -239,7 +297,8 @@ export class Tabs extends EventEmitter<{ change: [TabsState] }> {
       this.create(url, disposition !== 'background-tab');
       return { action: 'deny' };
     });
-    wc.on('did-create-window', (child) => {
+    wc.on('did-create-window', (child, details) => {
+      void this.guard.adopt(child.webContents, details.url).catch(() => child.close());
       this.popups.add(child);
       child.on('closed', () => this.popups.delete(child));
       if (this.locked) child.close();
@@ -361,9 +420,7 @@ export class Tabs extends EventEmitter<{ change: [TabsState] }> {
     tab.started = true;
     tab.error = undefined;
     this.layout();
-    tab.view.webContents.loadURL(url).catch(() => {
-      /* reported through did-fail-load */
-    });
+    this.load(tab, url);
     this.changed();
   }
 
@@ -379,7 +436,7 @@ export class Tabs extends EventEmitter<{ change: [TabsState] }> {
       this.activate(id);
       return;
     }
-    if (!tab.started) return;
+    if (!tab.started || !this.guard.isReady(tab.view.webContents.id)) return;
     tab.error = undefined;
     tab.view.webContents.reload();
     this.layout();
@@ -409,7 +466,7 @@ export class Tabs extends EventEmitter<{ change: [TabsState] }> {
     } else {
       // Pages that failed while the tunnel was down get another try.
       for (const t of this.tabs.values()) {
-        if (t.started && t.error) {
+        if (t.started && t.error && this.guard.isReady(t.view.webContents.id)) {
           t.error = undefined;
           t.view.webContents.reload();
         }

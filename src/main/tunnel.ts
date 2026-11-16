@@ -31,6 +31,11 @@ export interface TunnelOptions {
   failuresBeforeDown: number;
   probe: (proxy: ProxyEndpoint, timeoutMs: number) => Promise<number>;
   exitInfo: (proxy: ProxyEndpoint) => Promise<ExitInfo>;
+  /**
+   * Runs after the exit is known and before the gate opens: pages get the exit's time zone
+   * (pageGuard.ts) before any of them can reach the network through the new exit.
+   */
+  beforeOpen: (exit: ExitInfo) => Promise<{ timezone?: string } | void>;
 }
 
 const DEFAULTS: TunnelOptions = {
@@ -42,6 +47,7 @@ const DEFAULTS: TunnelOptions = {
   failuresBeforeDown: 2,
   probe: probeTunnel,
   exitInfo,
+  beforeOpen: async () => {},
 };
 
 function errorText(e: unknown): string {
@@ -126,6 +132,8 @@ export class Tunnel extends EventEmitter<{ change: [TunnelState] }> {
         throw new Error(`сервер не отвечает: ${errorText(e)}`);
       });
       if (gen !== this.generation) return;
+      const extra = (await this.opt.beforeOpen(exit)) ?? {};
+      if (gen !== this.generation) return;
 
       await this.gate.openGate(creds);
       if (gen !== this.generation) {
@@ -135,7 +143,7 @@ export class Tunnel extends EventEmitter<{ change: [TunnelState] }> {
       this.creds = creds;
       this.failures = 0;
       this.lastCheckAt = Date.now();
-      this.set({ status: 'connected', profileId: profile.id, profileName: profile.name, exit, since: Date.now() });
+      this.set({ status: 'connected', profileId: profile.id, profileName: profile.name, exit: { ...exit, ...extra }, since: Date.now() });
       this.schedule(gen, this.opt.checkEveryMs);
     } catch (e) {
       if (gen !== this.generation) return;
