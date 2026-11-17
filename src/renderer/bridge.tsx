@@ -30,9 +30,21 @@ export function errText(e: unknown): string {
   return m.replace(/^Error invoking remote method '[^']+': (Error: )?/, '');
 }
 
-/** Coloured first letter of the site. Real favicons are not loaded: the UI never touches
- * the network, and fetching them directly would bypass the tunnel. */
-export function LetterIcon({ url, size = 16 }: { url: string; size?: number }) {
+/**
+ * The site's icon. It is fetched in the page's own session, through its tunnel (tabs.ts),
+ * and arrives here as a data: URL: the UI itself never touches the network. Until then, or
+ * when a site has none, a coloured first letter.
+ */
+export function SiteIcon({ url, icon, size = 16 }: { url: string; icon?: string; size?: number }) {
+  const [broken, setBroken] = useState(false);
+  useEffect(() => setBroken(false), [icon]);
+  if (icon && !broken) {
+    return <img className="site-icon" src={icon} alt="" width={size} height={size} draggable={false} onError={() => setBroken(true)} />;
+  }
+  return <LetterIcon url={url} size={size} />;
+}
+
+function LetterIcon({ url, size = 16 }: { url: string; size?: number }) {
   const host = hostOf(url);
   const letter = (host[0] ?? '•').toUpperCase();
   let hue = 0;

@@ -1,6 +1,6 @@
 import { useEffect, useLayoutEffect, useRef, useState, type MouseEvent } from 'react';
 import type { Bookmark, BookmarksState, OpenMode, TabInfo } from '../shared/types';
-import { LetterIcon, api, type Run } from './bridge';
+import { SiteIcon, api, type Run } from './bridge';
 import { hostOf } from './format';
 import * as I from './icons';
 
@@ -90,7 +90,7 @@ export function BookmarksBar({ bookmarks, run }: { bookmarks: BookmarksState; ru
               void api.bookmarks.contextMenu(b.id);
             }}
           >
-            <LetterIcon url={b.url} size={14} />
+            <SiteIcon url={b.url} icon={b.icon} size={14} />
             <span>{b.title}</span>
           </button>
         ))}
@@ -174,7 +174,7 @@ export function BookmarksPanel(props: { bookmarks: BookmarksState; editId?: stri
                   void api.bookmarks.contextMenu(b.id);
                 }}
               >
-                <LetterIcon url={b.url} size={18} />
+                <SiteIcon url={b.url} icon={b.icon} size={18} />
                 <div className="bm-text">
                   <div className="bm-title">{b.title}</div>
                   <div className="muted small">{hostOf(b.url)}</div>
@@ -279,7 +279,7 @@ export function BookmarkTiles({ bookmarks, run }: { bookmarks: BookmarksState; r
             void api.bookmarks.contextMenu(b.id);
           }}
         >
-          <LetterIcon url={b.url} size={32} />
+          <SiteIcon url={b.url} icon={b.icon} size={32} />
           <span>{b.title}</span>
         </button>
       ))}

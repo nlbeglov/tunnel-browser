@@ -1,4 +1,4 @@
-import { useCallback, useEffect, useLayoutEffect, useRef, useState, type FormEvent, type KeyboardEvent } from 'react';
+import { useCallback, useEffect, useLayoutEffect, useRef, useState, type FormEvent, type KeyboardEvent, type ReactNode } from 'react';
 import type {
   BookmarksState,
   BrowserSettings,
@@ -9,11 +9,13 @@ import type {
   TabsState,
   TunnelState,
   UpdateState,
+  WindowProfilesState,
 } from '../shared/types';
 import { BookmarkStar, BookmarkTiles, BookmarksBar, BookmarksPanel } from './bookmarks';
-import { LetterIcon, api, errText, useBridge, type Run } from './bridge';
+import { SiteIcon, api, errText, useBridge, type Run } from './bridge';
 import { flag, profileLine, usageLine } from './format';
 import * as I from './icons';
+import { ProfileChip, ProfilesPanel, useProfileChrome } from './windows';
 
 type Panel = null | PanelName;
 const isMac = api.app.platform === 'darwin';
@@ -24,6 +26,8 @@ export function App() {
   const profiles = useBridge<ProfilesState>({ profiles: [], subscriptions: [] }, api.profiles.get, api.profiles.onChange);
   const update = useBridge<UpdateState>({ status: 'idle', currentVersion: '' }, api.updates.get, api.updates.onChange);
   const bookmarks = useBridge<BookmarksState>({ items: [], showBar: true }, api.bookmarks.get, api.bookmarks.onChange);
+  const windows = useBridge<WindowProfilesState>({ profiles: [], freeColors: [], current: '' }, api.windows.get, api.windows.onChange);
+  const me = windows.profiles.find((p) => p.current);
   const [panel, setPanel] = useState<Panel>(null);
   const [editBookmark, setEditBookmark] = useState<string | undefined>();
   const [toast, setToast] = useState<string | null>(null);
@@ -47,18 +51,7 @@ export function App() {
     [],
   );
   useEffect(() => api.app.onFullScreen(setFullScreen), []);
-  useEffect(() => {
-    if (isMac) return;
-    // The window buttons are drawn by the system over the strip: give them the strip's colours.
-    const mq = matchMedia('(prefers-color-scheme: dark)');
-    const report = () => {
-      const css = getComputedStyle(document.documentElement);
-      api.app.setTitleBarColors({ color: css.getPropertyValue('--bg').trim(), symbolColor: css.getPropertyValue('--text').trim() });
-    };
-    report();
-    mq.addEventListener('change', report);
-    return () => mq.removeEventListener('change', report);
-  }, []);
+  useProfileChrome(me, tunnel);
   useEffect(() => api.app.onError(setToast), []);
 
   const run = useCallback<Run>(async (fn) => {
@@ -75,7 +68,7 @@ export function App() {
 
   return (
     <div className={`app ${isMac ? 'mac' : 'wco'} ${fullScreen ? 'fullscreen' : ''}`}>
-      <TabStrip tabs={tabs} onToast={setToast} />
+      <TabStrip tabs={tabs} onToast={setToast} chip={<ProfileChip me={me} tunnel={tunnel} onClick={() => togglePanel('profiles')} />} />
       <Toolbar
         tab={active}
         locked={locked}
@@ -111,6 +104,7 @@ export function App() {
         {panel === 'servers' && <ServersPanel profiles={profiles} tunnel={tunnel} run={run} onClose={() => setPanel(null)} />}
         {panel === 'bookmarks' && <BookmarksPanel bookmarks={bookmarks} editId={editBookmark} run={run} onClose={() => setPanel(null)} />}
         {panel === 'settings' && <SettingsPanel update={update} run={run} onClose={() => setPanel(null)} />}
+        {panel === 'profiles' && <ProfilesPanel state={windows} servers={profiles} run={run} onClose={() => setPanel(null)} />}
       </div>
     </div>
   );
@@ -120,10 +114,10 @@ export function App() {
 
 function Favicon({ tab }: { tab: TabInfo }) {
   if (tab.loading) return <span className="spinner" />;
-  return <LetterIcon url={tab.url} />;
+  return <SiteIcon url={tab.url} icon={tab.icon} />;
 }
 
-function TabStrip({ tabs, onToast }: { tabs: TabsState; onToast: (s: string) => void }) {
+function TabStrip({ tabs, onToast, chip }: { tabs: TabsState; onToast: (s: string) => void; chip: ReactNode }) {
   const [dragId, setDragId] = useState<number | null>(null);
   const [dropAt, setDropAt] = useState<number | null>(null);
   const drop = () => {
@@ -136,6 +130,7 @@ function TabStrip({ tabs, onToast }: { tabs: TabsState; onToast: (s: string) => 
   };
   return (
     <div className="tabstrip">
+      {chip}
       {tabs.tabs.map((t, i) => (
         <div
           key={t.id}
@@ -742,8 +737,8 @@ function SettingsPanel({ update, run, onClose }: { update: UpdateState; run: Run
         </section>
 
         <section className="group">
-          <div className="group-title">Данные браузера</div>
-          <p className="muted small">Куки, кэш и сохранённые входы на сайты. Серверы не удаляются.</p>
+          <div className="group-title">Данные сайтов этого профиля</div>
+          <p className="muted small">Куки, кэш и сохранённые входы на сайты в этом окне. Другие профили и серверы не затрагиваются.</p>
           <button
             className="btn"
             onClick={() =>

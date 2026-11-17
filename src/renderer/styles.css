@@ -88,7 +88,8 @@ textarea {
   gap: 2px;
   height: 38px;
   padding: 6px 8px 0;
-  background: var(--bg);
+  /* the window profile's colour mixed into the background (windows.tsx) */
+  background: var(--strip, var(--bg));
   overflow: hidden;
   flex-shrink: 0;
 }
@@ -152,6 +153,12 @@ textarea {
   font-weight: 700;
   color: #fff;
   background: hsl(var(--hue) 55% 45%);
+}
+
+.site-icon {
+  flex-shrink: 0;
+  object-fit: contain;
+  border-radius: 3px;
 }
 
 .spinner {
@@ -1003,4 +1010,170 @@ textarea {
 .toggle > span {
   display: flex;
   flex-direction: column;
+}
+
+/* ---- window profiles (windows.tsx): the badge in the tab strip, the profiles panel ---- */
+.profile-chip {
+  align-self: center;
+  display: flex;
+  align-items: center;
+  gap: 7px;
+  max-width: 180px;
+  height: 26px;
+  margin: 0 6px 0 2px;
+  padding: 0 12px 0 9px;
+  border: 0;
+  border-radius: 13px;
+  background: var(--profile);
+  font-size: 12px;
+  font-weight: 600;
+  cursor: pointer;
+  flex-shrink: 0;
+  -webkit-app-region: no-drag;
+}
+
+.ink-dark {
+  color: #1b1e24;
+}
+
+.ink-light {
+  color: #ffffff;
+}
+
+.profile-chip:hover {
+  filter: brightness(1.08);
+}
+
+.chip-name {
+  overflow: hidden;
+  white-space: nowrap;
+  text-overflow: ellipsis;
+}
+
+.chip-flag {
+  font-size: 14px;
+  line-height: 1;
+}
+
+.chip-dot {
+  width: 8px;
+  height: 8px;
+  border-radius: 50%;
+  background: currentColor;
+  opacity: 0.7;
+}
+
+.avatar {
+  display: inline-grid;
+  place-items: center;
+  width: var(--size);
+  height: var(--size);
+  border-radius: 50%;
+  background: var(--c);
+  font-weight: 700;
+  font-size: calc(var(--size) * 0.42);
+  flex-shrink: 0;
+}
+
+.profile-row {
+  display: flex;
+  flex-direction: column;
+  gap: 10px;
+  padding: 10px;
+  border-radius: var(--radius);
+}
+
+.profile-row.current {
+  background: var(--bg-3);
+}
+
+.profile-main {
+  display: flex;
+  align-items: center;
+  gap: 12px;
+}
+
+.profile-text {
+  flex: 1;
+  min-width: 0;
+}
+
+.profile-name {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  font-weight: 600;
+}
+
+.profile-edit {
+  display: flex;
+  flex-direction: column;
+  gap: 10px;
+  padding-left: 48px;
+}
+
+.field {
+  display: flex;
+  flex-direction: column;
+  gap: 4px;
+}
+
+.field input,
+.field select {
+  height: 32px;
+  padding: 0 10px;
+  border: 1px solid var(--line);
+  border-radius: 8px;
+  background: var(--bg-3);
+  color: var(--text);
+  font: inherit;
+}
+
+.new-profile {
+  display: flex;
+  flex-direction: column;
+  gap: 10px;
+}
+
+.swatches {
+  margin: 0;
+  padding: 0;
+  border: 0;
+}
+
+.swatches legend {
+  margin-bottom: 6px;
+  padding: 0;
+}
+
+.swatch-row {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 8px;
+}
+
+.swatch {
+  position: relative;
+  width: 28px;
+  height: 28px;
+  border-radius: 50%;
+  background: var(--c);
+  cursor: pointer;
+}
+
+.swatch.picked {
+  box-shadow: 0 0 0 2px var(--bg-2), 0 0 0 4px var(--c);
+}
+
+.swatch input {
+  position: absolute;
+  inset: 0;
+  margin: 0;
+  opacity: 0;
+  cursor: pointer;
+}
+
+.swatch:has(input:focus-visible) {
+  outline: 2px solid var(--accent);
+  outline-offset: 3px;
 }
