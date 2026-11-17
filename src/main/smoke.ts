@@ -22,6 +22,8 @@ interface Ctx {
   tabs: Tabs;
   store: Store;
   browser: BrowserData;
+  /** the window profile under test (its own bookmarks) */
+  profileId: string;
 }
 
 interface LoadResult {
@@ -189,16 +191,17 @@ export async function runSmoke(ctx: Ctx): Promise<void> {
     check('часовой пояс показан в интерфейсе', exit?.timezone === wantTz, exit?.timezone);
 
     // --- 3b. bookmarks
-    const bm = ctx.browser.addBookmark(TRACE, 'Cloudflare trace');
-    const again = ctx.browser.addBookmark(`${TRACE}#x`, 'дубль');
-    ctx.browser.addBookmark('https://example.com/', 'Example');
+    const pid = ctx.profileId;
+    const bm = ctx.browser.addBookmark(pid, TRACE, 'Cloudflare trace');
+    const again = ctx.browser.addBookmark(pid, `${TRACE}#x`, 'дубль');
+    ctx.browser.addBookmark(pid, 'https://example.com/', 'Example');
     check(
       'закладка добавлена, повторная не дублируется',
-      ctx.browser.bookmarksState().items.length === 2 && again.id === bm.id && ctx.browser.byUrl(TRACE)?.id === bm.id,
+      ctx.browser.bookmarksState(pid).items.length === 2 && again.id === bm.id && ctx.browser.byUrl(pid, TRACE)?.id === bm.id,
     );
     let badRejected = false;
     try {
-      ctx.browser.addBookmark('file:///etc/passwd', 'x');
+      ctx.browser.addBookmark(pid, 'file:///etc/passwd', 'x');
     } catch {
       badRejected = true;
     }

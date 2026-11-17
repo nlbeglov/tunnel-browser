@@ -4,8 +4,9 @@
 import { execFile, spawn, type ChildProcess } from 'node:child_process';
 import { randomBytes } from 'node:crypto';
 import { EventEmitter } from 'node:events';
-import { existsSync, readFileSync, rmSync, writeFileSync } from 'node:fs';
+import { existsSync, readFileSync, readdirSync, rmSync, writeFileSync } from 'node:fs';
 import net from 'node:net';
+import { join } from 'node:path';
 
 export const CORE_NAME = 'tunnel-browser-core';
 
@@ -70,6 +71,17 @@ export async function killStaleCore(pidFile: string): Promise<void> {
     // already gone
   }
   rmSync(pidFile, { force: true });
+}
+
+/** Every window profile has its own core and pid file (core-<profile>.pid; core.pid before). */
+export async function killStaleCores(dir: string): Promise<void> {
+  let names: string[] = [];
+  try {
+    names = readdirSync(dir).filter((n) => /^core(-[\w-]+)?\.pid$/.test(n));
+  } catch {
+    return;
+  }
+  await Promise.all(names.map((n) => killStaleCore(join(dir, n))));
 }
 
 export interface StartOptions {

@@ -55,6 +55,14 @@ const api: BridgeApi = {
     overflowMenu: (ids) => call('bookmarks:overflow-menu', ids),
     onChange: (cb) => listen('bookmarks:changed', cb),
   },
+  windows: {
+    get: () => call('windows:get'),
+    open: (id) => call('windows:open', id),
+    create: (input) => call('windows:create', input),
+    update: (id, patch) => call('windows:update', id, patch),
+    remove: (id) => call('windows:remove', id),
+    onChange: (cb) => listen('windows:changed', cb),
+  },
   updates: {
     get: () => call('updates:get'),
     check: () => call('updates:check'),
@@ -75,6 +83,7 @@ const api: BridgeApi = {
     },
     onFullScreen: (cb) => listen('ui:fullscreen', cb),
     setTitleBarColors: (colors) => ipcRenderer.send('ui:titlebar-colors', colors),
+    setTaskbarBadge: (png, description) => ipcRenderer.send('ui:taskbar-badge', png, description),
     onError: (cb) => listen('ui:error', cb),
   },
 };

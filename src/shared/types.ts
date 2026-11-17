@@ -98,6 +98,8 @@ export interface TabInfo {
   canGoBack: boolean;
   canGoForward: boolean;
   error?: string;
+  /** the site's icon as a data: URL, fetched through the tunnel */
+  icon?: string;
 }
 
 export interface TabsState {
@@ -112,6 +114,8 @@ export interface Bookmark {
   title: string;
   url: string;
   createdAt: number;
+  /** the site's icon as a data: URL, fetched through the tunnel */
+  icon?: string;
 }
 
 export interface BookmarksState {
@@ -128,7 +132,29 @@ export interface BrowserSettings {
 }
 
 export type OpenMode = 'current' | 'new-tab' | 'background';
-export type PanelName = 'servers' | 'settings' | 'bookmarks';
+export type PanelName = 'servers' | 'settings' | 'bookmarks' | 'profiles';
+
+/** A window profile as the UI sees it (windowProfiles.ts). */
+export interface WindowProfileInfo {
+  id: string;
+  name: string;
+  color: string;
+  /** a window of this profile is open */
+  open: boolean;
+  /** the profile of the window asking */
+  current: boolean;
+  serverName?: string;
+  /** the live exit when its window is connected, else the last one sites saw */
+  exit?: { ip: string; country?: string; live: boolean };
+}
+
+export interface WindowProfilesState {
+  profiles: WindowProfileInfo[];
+  /** colours no profile uses yet: offered for a new one */
+  freeColors: string[];
+  /** id of the profile of the window asking */
+  current: string;
+}
 
 export type UpdateStatus =
   | 'idle'
@@ -222,6 +248,15 @@ export interface BridgeApi {
     overflowMenu(ids: string[]): Promise<void>;
     onChange(cb: (state: BookmarksState) => void): () => void;
   };
+  windows: {
+    get(): Promise<WindowProfilesState>;
+    /** opens a window of the profile, or brings its window to the front */
+    open(id: string): Promise<void>;
+    create(input: { name: string; color: string; serverId?: string }): Promise<void>;
+    update(id: string, patch: { name?: string; color?: string }): Promise<void>;
+    remove(id: string): Promise<void>;
+    onChange(cb: (state: WindowProfilesState) => void): () => void;
+  };
   updates: {
     get(): Promise<UpdateState>;
     check(): Promise<void>;
@@ -239,6 +274,8 @@ export interface BridgeApi {
     onFullScreen(cb: (full: boolean) => void): () => void;
     /** Windows: colours for the window buttons drawn over the tab strip */
     setTitleBarColors(colors: { color: string; symbolColor: string }): void;
+    /** Windows: the small picture over this window's taskbar icon (profile colour and flag) */
+    setTaskbarBadge(png: string | null, description: string): void;
     onError(cb: (message: string) => void): () => void;
   };
 }

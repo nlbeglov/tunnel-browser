@@ -3,9 +3,10 @@
 // server stopped answering), no tab view is attached to the window, and tabs restored from
 // the last session wait (unloaded) until the tunnel is up.
 
-import { BrowserWindow, Menu, WebContentsView, clipboard, type Rectangle, type Session, type WebContents } from 'electron';
+import { BrowserWindow, Menu, WebContentsView, clipboard, nativeImage, type Rectangle, type Session, type WebContents } from 'electron';
 import { EventEmitter } from 'node:events';
 import type { OpenMode, TabInfo, TabsState } from '../shared/types';
+import { MAX_ICON_BYTES, MAX_RAW_ICON_BYTES, fetchableIconUrl, iconType } from './favicon';
 import { isWebUrl } from './guard';
 import type { PageGuard } from './pageGuard';
 import { inputToUrl, loadErrorText } from './url';
@@ -25,11 +26,15 @@ interface Tab {
   error?: string;
   /** resolves once the page guard covers this tab; nothing loads before that */
   covered: Promise<void>;
+  /** the site's icon (data: URL) and the origin it belongs to */
+  icon?: { origin: string; data: string };
 }
 
 const MAX_CLOSED = 25;
 
-export class Tabs extends EventEmitter<{ change: [TabsState] }> {
+export class Tabs extends EventEmitter<{ change: [TabsState]; icon: [pageUrl: string, icon: string] }> {
+  /** icon address -> data: URL (null: not an icon); per profile, never written to disk */
+  private readonly icons = new Map<string, string | null>();
   private readonly tabs = new Map<number, Tab>();
   private order: number[] = [];
   private activeId: number | null = null;
@@ -69,7 +74,7 @@ export class Tabs extends EventEmitter<{ change: [TabsState] }> {
   private info(t: Tab): TabInfo {
     const wc = t.view.webContents;
     if (t.pending) {
-      return { id: t.id, url: t.pending.url, title: t.pending.title, loading: false, canGoBack: false, canGoForward: false };
+      return { id: t.id, url: t.pending.url, title: t.pending.title, loading: false, canGoBack: false, canGoForward: false, icon: t.icon?.data };
     }
     return {
       id: t.id,
@@ -79,7 +84,58 @@ export class Tabs extends EventEmitter<{ change: [TabsState] }> {
       canGoBack: wc.navigationHistory.canGoBack(),
       canGoForward: wc.navigationHistory.canGoForward(),
       error: t.error,
+      icon: t.started && t.icon && originOf(wc.getURL()) === t.icon.origin ? t.icon.data : undefined,
     };
+  }
+
+  /**
+   * The page named its icons. They are fetched in the page's own session: through its tunnel
+   * and gate like the page itself, never directly (and not at all while the tunnel is down).
+   */
+  private async loadIcon(tab: Tab, wc: WebContents, candidates: string[]) {
+    const origin = originOf(wc.getURL());
+    if (!origin) return;
+    for (const url of candidates.slice(0, 3)) {
+      const icon = await this.fetchIcon(url);
+      if (!icon) continue;
+      if (tab.view.webContents !== wc || originOf(wc.getURL()) !== origin) return;
+      tab.icon = { origin, data: icon };
+      this.changed();
+      this.emit('icon', wc.getURL(), icon);
+      return;
+    }
+  }
+
+  private async fetchIcon(url: string): Promise<string | null> {
+    const kind = fetchableIconUrl(url);
+    if (!kind) return null;
+    if (this.icons.has(url)) return this.icons.get(url) ?? null;
+    let icon: string | null = null;
+    try {
+      if (kind === 'data') {
+        icon = url.length <= MAX_RAW_ICON_BYTES * 1.4 ? url : null;
+      } else {
+        const abort = new AbortController();
+        const timer = setTimeout(() => abort.abort(), 8000);
+        try {
+          const res = await this.ses.fetch(url, { signal: abort.signal, credentials: 'include' });
+          const size = Number(res.headers.get('content-length') ?? 0);
+          if (res.ok && size <= MAX_ICON_BYTES) {
+            const buf = Buffer.from(await res.arrayBuffer());
+            if (buf.length <= MAX_ICON_BYTES) icon = toIconDataUrl(buf);
+          }
+        } finally {
+          clearTimeout(timer);
+        }
+      }
+    } catch {
+      icon = null; // blocked by the gate, tunnel down, timeout: the tab keeps its letter
+    }
+    // Remember failures only for a while: the tunnel may just have been down.
+    this.icons.set(url, icon);
+    if (!icon) setTimeout(() => this.icons.delete(url), 60_000).unref();
+    if (this.icons.size > 500) this.icons.delete(this.icons.keys().next().value!);
+    return icon;
   }
 
   private changed() {
@@ -264,6 +320,9 @@ export class Tabs extends EventEmitter<{ change: [TabsState] }> {
     wc.on('did-navigate', update);
     wc.on('did-navigate-in-page', update);
     wc.on('page-title-updated', update);
+    wc.on('page-favicon-updated', (_e, urls) => {
+      if (current()) void this.loadIcon(tab, wc, urls);
+    });
     wc.on('did-start-loading', update);
     wc.on('did-stop-loading', update);
     wc.on('did-fail-load', (_e, code, desc, _url, isMainFrame) => {
@@ -505,4 +564,31 @@ export class Tabs extends EventEmitter<{ change: [TabsState] }> {
     this.tabs.clear();
     this.order = [];
   }
+}
+
+function originOf(url: string): string | null {
+  try {
+    const u = new URL(url);
+    return u.protocol === 'http:' || u.protocol === 'https:' ? u.origin : null;
+  } catch {
+    return null;
+  }
+}
+
+/**
+ * A data: URL for the UI (its CSP allows data: images only). Formats the OS decoder reads
+ * are re-encoded as a small PNG; SVG (and ICO outside Windows) are kept as they are when
+ * small. In an <img>, an SVG cannot run scripts.
+ */
+function toIconDataUrl(buf: Buffer): string | null {
+  const type = iconType(buf);
+  if (!type) return null;
+  if (type !== 'image/svg+xml') {
+    const img = nativeImage.createFromBuffer(buf);
+    if (!img.isEmpty()) {
+      const { width } = img.getSize();
+      return (width > 32 ? img.resize({ width: 32, quality: 'best' }) : img).toDataURL();
+    }
+  }
+  return buf.length <= MAX_RAW_ICON_BYTES ? `data:${type};base64,${buf.toString('base64')}` : null;
 }

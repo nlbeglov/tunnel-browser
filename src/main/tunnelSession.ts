@@ -42,9 +42,10 @@ export class TunnelSession extends EventEmitter<{ trouble: [] }> {
   private sinkhole: net.Server | null = null;
   private sinkholePort = 0;
 
-  constructor() {
+  /** `partition`: the window profile's own storage (windowProfiles.ts). */
+  constructor(partition = TUNNEL_PARTITION) {
     super();
-    this.ses = session.fromPartition(TUNNEL_PARTITION);
+    this.ses = session.fromPartition(partition);
   }
 
   async init(): Promise<void> {
