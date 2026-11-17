@@ -2,7 +2,7 @@
 
 import { describe, expect, it } from 'vitest';
 import { gateAllows, isServiceWorkerScript } from '../src/main/guard';
-import { FALLBACK_ZONE, SITE_LANGUAGES, SITE_LOCALE, exitTimezone, identityFor, knownZones } from '../src/main/identity';
+import { FALLBACK_ZONE, SITE_LANGUAGES, SITE_LOCALE, exitTimezone, identityFor, isNewExit, knownZones } from '../src/main/identity';
 import { dnsLookups, type NetLog } from '../src/main/netlog';
 import { COUNTRY_ZONE } from '../src/main/timezones';
 import { isUpdateHost } from '../src/main/updateProxy';
@@ -46,6 +46,23 @@ describe('time zone of the exit', () => {
   it('language and formats are the same for everyone', () => {
     expect(identityFor('NL', 'AMS')).toEqual({ timezone: 'Europe/Amsterdam', locale: SITE_LOCALE, languages: SITE_LANGUAGES });
     expect(SITE_LOCALE).toBe('en-US');
+  });
+});
+
+describe('is it a new address for sites?', () => {
+  it('the exit IP decides, not which server entry was picked', () => {
+    // Same IP through another entry of the subscription, or after a refresh re-created the ids.
+    expect(isNewExit('130.17.27.121', '130.17.27.121', true)).toBe(false);
+    expect(isNewExit('130.17.27.121', '130.17.27.121', false)).toBe(false);
+    // Same server, but the provider moved it to another IP.
+    expect(isNewExit('198.51.100.23', '130.17.27.121', false)).toBe(true);
+  });
+
+  it('without both IPs, a different server link counts as new', () => {
+    expect(isNewExit('?', '130.17.27.121', true)).toBe(true);
+    expect(isNewExit('130.17.27.121', undefined, true)).toBe(true);
+    expect(isNewExit('130.17.27.121', undefined, false)).toBe(false);
+    expect(isNewExit(undefined, undefined, false)).toBe(false);
   });
 });
 

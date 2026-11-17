@@ -32,10 +32,11 @@ export interface TunnelOptions {
   probe: (proxy: ProxyEndpoint, timeoutMs: number) => Promise<number>;
   exitInfo: (proxy: ProxyEndpoint) => Promise<ExitInfo>;
   /**
-   * Runs after the exit is known and before the gate opens: pages get the exit's time zone
-   * (pageGuard.ts) before any of them can reach the network through the new exit.
+   * Runs after the exit is known and before the gate opens, so pages can reach nothing yet:
+   * they get the exit's time zone (pageGuard.ts), and the user can be asked about a new IP.
+   * `cancel` leaves the tunnel disconnected.
    */
-  beforeOpen: (exit: ExitInfo) => Promise<{ timezone?: string } | void>;
+  beforeOpen: (exit: ExitInfo, profile: ServerProfile) => Promise<{ timezone?: string; cancel?: boolean } | void>;
 }
 
 const DEFAULTS: TunnelOptions = {
@@ -132,8 +133,13 @@ export class Tunnel extends EventEmitter<{ change: [TunnelState] }> {
         throw new Error(`сервер не отвечает: ${errorText(e)}`);
       });
       if (gen !== this.generation) return;
-      const extra = (await this.opt.beforeOpen(exit)) ?? {};
+      const { cancel, ...extra } = (await this.opt.beforeOpen(exit, profile)) ?? {};
       if (gen !== this.generation) return;
+      if (cancel) {
+        await this.xray.stop();
+        this.set({ status: 'disconnected' });
+        return;
+      }
 
       await this.gate.openGate(creds);
       if (gen !== this.generation) {

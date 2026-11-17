@@ -79,6 +79,19 @@ export function identityFor(country?: string, colo?: string): SiteIdentity {
   return { timezone: exitTimezone(country, colo), locale: SITE_LOCALE, languages: SITE_LANGUAGES };
 }
 
+/**
+ * Would sites see a different address than last time? Decided by the exit IPs themselves.
+ * Only when one of them is unknown does the server matter: a different server link then
+ * counts as a new address. (Server ids do not: a subscription refresh re-creates them.)
+ */
+export function isNewExit(ip: string | undefined, lastIp: string | undefined, differentServer: boolean): boolean {
+  const known = (v?: string) => (v && v.trim() && v.trim() !== '?' ? v.trim() : undefined);
+  const now = known(ip);
+  const before = known(lastIp);
+  if (now && before) return now !== before;
+  return differentServer;
+}
+
 /** All zones this module can hand out, for tests. */
 export function knownZones(): string[] {
   return [...new Set([FALLBACK_ZONE, ...Object.values(COUNTRY_ZONE), ...Object.values(COLO_ZONE).flatMap((m) => Object.values(m))])];

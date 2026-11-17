@@ -15,7 +15,8 @@ import { join } from 'node:path';
 import { pathToFileURL } from 'node:url';
 import type { BrowserSettings, ImportResult, OpenMode, PanelName, ServerProfile, Subscription, TunnelState, UiRect } from '../shared/types';
 import { BrowserData } from './browserData';
-import { identityFor } from './identity';
+import type { ExitInfo } from './health';
+import { identityFor, isNewExit } from './identity';
 import type { UaMetadata } from './pageGuard';
 import { parseMany } from './links';
 import { Store } from './store';
@@ -91,10 +92,13 @@ async function main() {
   const store = new Store(onStorageError);
   const browser = new BrowserData(onStorageError);
   await Promise.all([store.load(), browser.load()]);
+  // Set up once the window exists (see confirmNewExit below).
+  let confirmNewExit: (exit: ExitInfo, profile: ServerProfile) => Promise<boolean> = async () => true;
   const tunnel = new Tunnel(gate, corePath, pidFile, {
-    // Pages get the exit's time zone before the gate opens, so none of them can reach a site
-    // through the new exit with the old values.
-    beforeOpen: async (exit) => {
+    // The tunnel works but the gate is still closed: no page has reached anything through
+    // the new exit. Ask about a new IP now, then give pages the exit's time zone.
+    beforeOpen: async (exit, profile) => {
+      if (!(await confirmNewExit(exit, profile))) return { cancel: true };
       const identity = identityFor(exit.country, exit.colo);
       await gate.guard.setIdentity(identity);
       return { timezone: identity.timezone };
@@ -148,7 +152,10 @@ async function main() {
   tunnel.on('change', (s: TunnelState) => {
     tabs.setLocked(tunnel.locked);
     send('tunnel:changed', s);
-    if (s.status === 'connected' && s.profileId) browser.lastServerId = s.profileId;
+    if (s.status === 'connected') {
+      if (s.profileId) browser.lastServerId = s.profileId;
+      if (s.exit?.ip && s.exit.ip !== '?') browser.lastExitIp = s.exit.ip;
+    }
   });
   tabs.on('change', (s) => {
     send('tabs:changed', s);
@@ -244,40 +251,44 @@ async function main() {
   };
 
   /**
-   * Another server means another IP. Sites that know you by cookies or a login would see the
-   * new IP next to them and link the two, so ask first: nothing reaches the new exit before
-   * the answer, and with "clear" the old identity is gone before the tunnel switches.
+   * A new exit IP is a new address for sites, and those that know you by cookies or a login
+   * would link it to the old one. Asked only when the IP really changes, once the tunnel has
+   * found it out and before the gate opens: nothing has reached any site through it yet.
+   * With "clear", the old identity is gone before the first page loads.
    */
-  async function confirmServerSwitch(profile: ServerProfile): Promise<boolean> {
-    const last = browser.lastServerId;
-    if (!last || last === profile.id || !browser.settings().warnOnServerSwitch) return true;
+  confirmNewExit = async (exit, profile) => {
+    const lastIp = browser.lastExitIp;
+    const lastServer = store.profile(browser.lastServerId);
+    if (!isNewExit(exit.ip, lastIp, !!lastServer && lastServer.link !== profile.link)) return true;
+    if (!browser.settings().warnOnServerSwitch) return true;
     const cookies = await gate.ses.cookies.get({}).catch(() => []);
     if (!cookies.length) return true;
+    const known = exit.ip && exit.ip !== '?';
     const r = await dialog.showMessageBox(win, {
       type: 'warning',
-      buttons: ['Очистить и подключить', 'Подключить без очистки', 'Отмена'],
+      buttons: ['Очистить и подключить', 'Подключить без очистки', 'Не подключаться'],
       defaultId: 0,
       cancelId: 2,
       noLink: true,
-      message: `Подключиться к «${profile.name}» — это новый IP-адрес`,
+      message: known ? `Новый IP-адрес для сайтов: ${exit.ip}` : `«${profile.name}» — возможно, новый IP-адрес`,
       detail:
-        'Сайты, где вы вошли в аккаунт или которые вас запомнили по куки, увидят новый адрес рядом со старыми куки ' +
+        (known && lastIp ? `Раньше сайты видели адрес ${lastIp}. ` : '') +
+        'Сайты, где вы вошли в аккаунт или которые запомнили вас по куки, увидят новый адрес рядом со старыми куки ' +
         'и поймут, что это тот же человек.\n\n' +
         '«Очистить и подключить» удалит куки, входы и данные сайтов, а открытые вкладки загрузятся заново. ' +
-        'Пока вы не ответите, через новый сервер ничего не уходит.',
+        'Сервер уже проверен, но браузер закрыт: пока вы не ответите, сайты ничего не получают.',
       checkboxLabel: 'Больше не спрашивать (включить снова: ⋮ → Настройки)',
     });
     if (r.response === 2) return false;
     if (r.checkboxChecked) browser.setSettings({ warnOnServerSwitch: false });
     if (r.response === 0) await forgetSites();
     return true;
-  }
+  };
 
   handle('tunnel:connect', async (id: unknown) => {
     const profile = store.profile(id === undefined ? store.selectedId : str(id));
     if (!profile) throw new Error('сначала добавьте сервер');
     store.select(profile.id);
-    if (!(await confirmServerSwitch(profile))) return;
     void tunnel.connect(profile);
   });
   handle('tunnel:disconnect', () => tunnel.disconnect());
