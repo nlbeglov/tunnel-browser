@@ -21,8 +21,10 @@ interface Data {
   session?: { tabs: SessionTab[]; activeIndex: number };
   /** the user said no to "move to Applications" (macOS) */
   declinedMoveToApplications?: boolean;
-  /** the server of the last working connection: switching away from it means a new IP */
+  /** the server of the last working connection (when its IP was not known) */
   lastServerId?: string;
+  /** the exit IP sites last saw: a different one is a new identity for them */
+  lastExitIp?: string;
 }
 
 const DEFAULTS: Data = { version: 1, bookmarks: [], settings: { restoreTabs: true, showBookmarksBar: true, warnOnServerSwitch: true } };
@@ -125,6 +127,16 @@ export class BrowserData extends EventEmitter<{ bookmarks: [BookmarksState]; set
 
   set declinedMoveToApplications(v: boolean) {
     this.data.declinedMoveToApplications = v;
+    this.save('quiet');
+  }
+
+  get lastExitIp(): string | undefined {
+    return this.data.lastExitIp;
+  }
+
+  set lastExitIp(ip: string | undefined) {
+    if (this.data.lastExitIp === ip) return;
+    this.data.lastExitIp = ip;
     this.save('quiet');
   }
 

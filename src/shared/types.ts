@@ -123,7 +123,7 @@ export interface BrowserSettings {
   /** reopen the tabs of the last session on start (they load once the tunnel is up) */
   restoreTabs: boolean;
   showBookmarksBar: boolean;
-  /** ask before switching to another server while sites hold cookies */
+  /** ask before sites see a new exit IP while they hold cookies */
   warnOnServerSwitch: boolean;
 }
 

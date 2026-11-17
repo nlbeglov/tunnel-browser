@@ -180,6 +180,24 @@ describe.skipIf(!hasCore)('tunnel state when the server goes away', () => {
     expect(probes() - before).toBe(1);
   });
 
+  it('"do not connect" on a new IP: the gate never opens', async () => {
+    const gate = new FakeGate();
+    let opened = 0;
+    gate.openGate = async () => {
+      opened++;
+      gate.open = true;
+    };
+    tunnel = new Tunnel(gate, CORE, undefined, {
+      exitInfo: async () => ({ ip: '198.51.100.23', country: 'US', latencyMs: 10 }),
+      probe: async () => 12,
+      beforeOpen: async (exit) => (exit.ip === '198.51.100.23' ? { cancel: true } : {}),
+    });
+    await tunnel.connect(parseLink(await deadServerLink()));
+    expect(tunnel.state.status).toBe('disconnected');
+    expect(opened).toBe(0);
+    expect(gate.open).toBe(false);
+  });
+
   it('disconnect and reconnect lock the UI before the slow teardown', async () => {
     const { gate, t } = await connected({ probeOk: () => true });
     gate.closeDelayMs = 200;

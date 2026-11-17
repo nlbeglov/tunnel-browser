@@ -149,7 +149,13 @@ export class PageGuard {
     if (!dbg.isAttached()) dbg.attach('1.3');
     try {
       await dbg.sendCommand('Target.setAutoAttach', { autoAttach: true, waitForDebuggerOnStart: true, flatten: true });
-      await this.apply(dbg, undefined);
+      // A new exit may arrive while this runs (setIdentity skips pages not ready yet):
+      // apply again until what was applied is the current identity.
+      let applied: SiteIdentity;
+      do {
+        applied = this.identity;
+        await this.apply(dbg, undefined, applied);
+      } while (applied !== this.identity);
       page.ready = true;
       page.failed = undefined;
     } catch (e) {
@@ -175,8 +181,7 @@ export class PageGuard {
     await dbg.sendCommand('Runtime.runIfWaitingForDebugger', {}, sessionId).catch(() => {});
   }
 
-  private async apply(dbg: Electron.Debugger, sessionId: string | undefined) {
-    const id = this.identity;
+  private async apply(dbg: Electron.Debugger, sessionId: string | undefined, id: SiteIdentity = this.identity) {
     const send = async (method: string, params: Record<string, unknown>) => {
       try {
         await dbg.sendCommand(method, params, sessionId);

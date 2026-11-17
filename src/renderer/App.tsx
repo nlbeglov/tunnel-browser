@@ -733,7 +733,7 @@ function SettingsPanel({ update, run, onClose }: { update: UpdateState; run: Run
                   onChange={(e) => run(async () => setSettings(await api.app.setSettings({ warnOnServerSwitch: e.target.checked })))}
                 />
                 <span>
-                  Спрашивать про куки при смене сервера
+                  Спрашивать про куки, если сменился IP
                   <span className="muted small">Сайты, где вы вошли, могут связать новый IP со старым по куки.</span>
                 </span>
               </label>
