@@ -1,14 +1,30 @@
-import { useCallback, useEffect, useLayoutEffect, useRef, useState, type FormEvent, type KeyboardEvent, type ReactNode } from 'react';
+import { useCallback, useEffect, useLayoutEffect, useRef, useState, type DragEvent, type FormEvent, type KeyboardEvent, type ReactNode } from 'react';
 import type { BookmarksState, BrowserSettings, ProfilesState, TabInfo, TabsState, TunnelState, UpdateState, WindowProfileInfo, WindowProfilesState } from '../shared/types';
-import { BookmarkStar, BookmarkTiles, BookmarksBar, BookmarksPanel } from './bookmarks';
+import { BookmarkStar, BookmarkTiles, BookmarksBar } from './bookmarks';
 import { SiteIcon, api, errText, useBridge, type Run } from './bridge';
-import { timeIn, useNow, zoneLabel } from './clock';
+import { siteTime, useNow } from './clock';
 import { flag, ipText } from './format';
+import { Markdown } from './markdown';
 import * as I from './icons';
-import { Ping, SettingsView, type SettingsSection } from './settings';
+import { Ping } from './connectionCard';
+import { SettingsView, type SettingsSection } from './settings';
 import { ProfileChip, useProfileChrome } from './windows';
 
 const isMac = api.app.platform === 'darwin';
+
+/**
+ * The panel under the IP or the bookmarks button (drawn over the page by main/popup.ts):
+ * right-aligned under its button.
+ */
+function openPanelUnder(kind: 'connection' | 'bookmarks', editId?: string) {
+  const button = document.querySelector(kind === 'connection' ? '.toolbar .pill' : '.toolbar [aria-label="Закладки"]');
+  if (!button) return;
+  const r = button.getBoundingClientRect();
+  void api.app.panel(kind, r.right, r.bottom + 4, editId);
+}
+
+/** A place in the tab strip: a tab's id, or the settings tab. */
+type StripKey = number | 'settings';
 
 export function App() {
   const tunnel = useBridge<TunnelState>({ status: 'disconnected' }, api.tunnel.get, api.tunnel.onChange);
@@ -21,10 +37,10 @@ export function App() {
   const me = windows.profiles.find((p) => p.current);
   // Settings are a tab of their own in the strip (no page, no address). While it is the
   // active tab, the page of the selected tab is hidden behind it, not unloaded.
-  const [settings, setSettings] = useState<{ section: SettingsSection; active: boolean } | null>(null);
+  // `after`: the tab it stands after in the strip (null: first). New tabs open next to the
+  // active one, so a plain position would drift.
+  const [settings, setSettings] = useState<{ section: SettingsSection; active: boolean; after: number | null } | null>(null);
   const [lastSection, setLastSection] = useState<SettingsSection>('connection');
-  const [bookmarksOpen, setBookmarksOpen] = useState(false);
-  const [editBookmark, setEditBookmark] = useState<string | undefined>();
   const [toast, setToast] = useState<string | null>(null);
   const [fullScreen, setFullScreen] = useState(false);
 
@@ -33,8 +49,11 @@ export function App() {
   const active = tabs.tabs.find((t) => t.id === tabs.activeId) ?? null;
 
   const lastRef = useRef(lastSection);
+  const activeRef = useRef(tabs.activeId);
+  activeRef.current = tabs.activeId;
   const openSettings = useCallback((s: SettingsSection) => {
-    setSettings({ section: s, active: true });
+    // A new settings tab opens next to the active tab, like any new tab.
+    setSettings((st) => ({ section: s, active: true, after: st ? st.after : activeRef.current }));
     setLastSection(s);
     lastRef.current = s;
   }, []);
@@ -51,16 +70,53 @@ export function App() {
   }, [settingsTab]);
   // Another tab, or a new one, came to the front.
   useEffect(leaveSettings, [tabs.activeId]);
+  // The strip: the tabs, with the settings tab after its neighbour. Its neighbour closed: it
+  // keeps its place (the tab before it becomes the neighbour).
+  const settingsAt = useRef(0);
+  const strip: StripKey[] = tabs.tabs.map((t) => t.id);
+  if (settings) {
+    let at = settings.after === null ? 0 : strip.indexOf(settings.after) + 1;
+    if (settings.after !== null && at === 0) at = Math.min(settingsAt.current, strip.length);
+    settingsAt.current = at;
+    strip.splice(at, 0, 'settings');
+  }
+  useEffect(() => {
+    if (!settings || settings.after === null || tabs.tabs.some((t) => t.id === settings.after)) return;
+    const at = strip.indexOf('settings');
+    const before = at > 0 ? strip[at - 1] : null;
+    setSettings({ ...settings, after: typeof before === 'number' ? before : null });
+  });
+  /** A tab or the settings tab was dragged: `order` is the strip as it is now. */
+  const reorder = (order: StripKey[], moved: StripKey) => {
+    const real = order.filter((k): k is number => k !== 'settings');
+    if (moved !== 'settings') void api.tabs.move(moved, real.indexOf(moved));
+    const at = order.indexOf('settings');
+    if (at >= 0) setSettings((st) => st && { ...st, after: at > 0 ? (order[at - 1] as number) : null });
+  };
+
+  // A query or a bookmark from the settings tab opens in it, like in Chrome: the settings tab
+  // becomes that page, in its place. Other tabs, empty ones included, stay as they are.
+  const latest = useRef({ tabs, settings, strip });
+  latest.current = { tabs, settings, strip };
+  const navigateFromSettings = useCallback(
+    async (input: string) => {
+      const after = latest.current.settings?.after ?? null;
+      closeSettings();
+      const id = await api.tabs.create(input);
+      const order = (await api.tabs.get()).tabs.map((x) => x.id).filter((x) => x !== id);
+      await api.tabs.move(id, after === null ? 0 : order.indexOf(after) + 1);
+    },
+    [closeSettings],
+  );
+  useEffect(() => api.tabs.onSettingsNavigate((url) => void navigateFromSettings(url).catch((e) => setToast(errText(e)))), [navigateFromSettings]);
+
   // Ctrl/Cmd+W and Ctrl+Tab from the menu, while the settings tab is open.
-  const latest = useRef({ tabs, settings });
-  latest.current = { tabs, settings };
   useEffect(
     () =>
       api.tabs.onSettingsTabCommand((cmd) => {
         if (cmd === 'close') return closeSettings();
-        const { tabs: t, settings: st } = latest.current;
+        const { tabs: t, settings: st, strip: order } = latest.current;
         if (!st) return;
-        const order: Array<number | 'settings'> = [...t.tabs.map((x) => x.id), 'settings'];
         const at = order.indexOf(st.active ? 'settings' : (t.activeId ?? 'settings'));
         const next = order[(at + (cmd === 'next' ? 1 : -1) + order.length) % order.length];
         if (next === 'settings') setSettings({ ...st, active: true });
@@ -79,10 +135,8 @@ export function App() {
   useEffect(
     () =>
       api.app.onOpenPanel((p, id) => {
-        if (p === 'bookmarks') {
-          setBookmarksOpen(true);
-          setEditBookmark(id);
-        } else openSettings(p === 'servers' ? 'connection' : p === 'profiles' ? 'profiles' : lastRef.current);
+        if (p === 'bookmarks') openPanelUnder('bookmarks', id);
+        else openSettings(p === 'servers' ? 'connection' : p === 'profiles' ? 'profiles' : lastRef.current);
       }),
     [],
   );
@@ -104,6 +158,8 @@ export function App() {
         tabs={tabs}
         onToast={setToast}
         onTab={leaveSettings}
+        strip={strip}
+        onReorder={reorder}
         settings={settings && { active: settings.active, onSelect: () => openSettings(settings.section), onClose: closeSettings }}
         chip={<ProfileChip me={me} tunnel={tunnel} onClick={() => toggleSettings('profiles')} />}
       />
@@ -113,12 +169,7 @@ export function App() {
         tunnel={tunnel}
         bookmarks={bookmarks}
         settingsActive={!!settings?.active}
-        toggleSettings={toggleSettings}
-        toggleBookmarks={() => {
-          setEditBookmark(undefined);
-          setBookmarksOpen(!bookmarksOpen);
-        }}
-        onNavigate={closeSettings}
+        onSettingsQuery={(q) => run(() => navigateFromSettings(q))}
         run={run}
         updateReady={update.status === 'available'}
       />
@@ -157,7 +208,6 @@ export function App() {
             />
           )}
         </Content>
-        {bookmarksOpen && <BookmarksPanel bookmarks={bookmarks} editId={editBookmark} run={run} onClose={() => setBookmarksOpen(false)} />}
       </div>
     </div>
   );
@@ -178,95 +228,111 @@ function Favicon({ tab }: { tab: TabInfo }) {
 
 function TabStrip(props: {
   tabs: TabsState;
+  /** the tabs and the settings tab, in strip order */
+  strip: StripKey[];
+  onReorder: (order: StripKey[], moved: StripKey) => void;
   onToast: (s: string) => void;
   onTab: () => void;
   settings: { active: boolean; onSelect: () => void; onClose: () => void } | null;
   chip: ReactNode;
 }) {
-  const { tabs, onToast, onTab, settings, chip } = props;
-  const [dragId, setDragId] = useState<number | null>(null);
+  const { tabs, strip, onReorder, onToast, onTab, settings, chip } = props;
+  const [dragKey, setDragKey] = useState<StripKey | null>(null);
   const [dropAt, setDropAt] = useState<number | null>(null);
+  const byId = new Map(tabs.tabs.map((t) => [t.id, t]));
   const drop = () => {
-    if (dragId !== null && dropAt !== null) {
-      const from = tabs.tabs.findIndex((t) => t.id === dragId);
-      void api.tabs.move(dragId, from < dropAt ? dropAt - 1 : dropAt);
+    if (dragKey !== null && dropAt !== null) {
+      const from = strip.indexOf(dragKey);
+      const order = strip.filter((k) => k !== dragKey);
+      order.splice(from < dropAt ? dropAt - 1 : dropAt, 0, dragKey);
+      if (order.join() !== strip.join()) onReorder(order, dragKey);
     }
-    setDragId(null);
+    setDragKey(null);
     setDropAt(null);
   };
+  /** What every tab in the strip does for dragging, the settings tab included. */
+  const dragProps = (key: StripKey, i: number) => ({
+    draggable: true,
+    onDragStart: (e: DragEvent) => {
+      setDragKey(key);
+      e.dataTransfer.effectAllowed = 'move';
+    },
+    onDragOver: (e: DragEvent<HTMLDivElement>) => {
+      if (dragKey === null) return;
+      e.preventDefault();
+      const r = e.currentTarget.getBoundingClientRect();
+      setDropAt(e.clientX < r.left + r.width / 2 ? i : i + 1);
+    },
+    onDrop: (e: DragEvent) => {
+      e.preventDefault();
+      drop();
+    },
+    onDragEnd: () => {
+      setDragKey(null);
+      setDropAt(null);
+    },
+  });
+  const dropClass = (i: number) => `${dropAt === i ? 'drop-before' : ''} ${dropAt === i + 1 && i === strip.length - 1 ? 'drop-after' : ''}`;
+
   return (
     <div className="tabstrip">
       {chip}
-      {tabs.tabs.map((t, i) => (
-        <div
-          key={t.id}
-          className={`tab ${t.id === tabs.activeId && !settings?.active ? 'active' : ''} ${dropAt === i ? 'drop-before' : ''} ${dropAt === i + 1 && i === tabs.tabs.length - 1 ? 'drop-after' : ''}`}
-          draggable
-          onDragStart={(e) => {
-            setDragId(t.id);
-            e.dataTransfer.effectAllowed = 'move';
-          }}
-          onDragOver={(e) => {
-            if (dragId === null) return;
-            e.preventDefault();
-            const r = e.currentTarget.getBoundingClientRect();
-            setDropAt(e.clientX < r.left + r.width / 2 ? i : i + 1);
-          }}
-          onDrop={(e) => {
-            e.preventDefault();
-            drop();
-          }}
-          onDragEnd={() => {
-            setDragId(null);
-            setDropAt(null);
-          }}
-          onMouseDown={(e) => {
-            if (e.button === 1) {
+      {strip.map((key, i) => {
+        if (key === 'settings') {
+          if (!settings) return null;
+          return (
+            <div
+              key="settings"
+              className={`tab settings-tab ${settings.active ? 'active' : ''} ${dropClass(i)}`}
+              title="Настройки"
+              {...dragProps(key, i)}
+              onMouseDown={(e) => {
+                if (e.button === 1) {
+                  e.preventDefault();
+                  settings.onClose();
+                } else if (e.button === 0) settings.onSelect();
+              }}
+            >
+              <span className="tab-blank" aria-hidden="true">
+                <I.Gear size={14} />
+              </span>
+              <span className="tab-title">Настройки</span>
+              <button className="icon-btn tab-close" aria-label="Закрыть настройки" onMouseDown={(e) => e.stopPropagation()} onClick={settings.onClose}>
+                <I.Close size={12} />
+              </button>
+            </div>
+          );
+        }
+        const t = byId.get(key);
+        if (!t) return null;
+        return (
+          <div
+            key={t.id}
+            className={`tab ${t.id === tabs.activeId && !settings?.active ? 'active' : ''} ${dropClass(i)}`}
+            {...dragProps(key, i)}
+            onMouseDown={(e) => {
+              if (e.button === 1) {
+                e.preventDefault();
+                void api.tabs.close(t.id);
+              } else if (e.button === 0) {
+                onTab();
+                void api.tabs.activate(t.id);
+              }
+            }}
+            onContextMenu={(e) => {
               e.preventDefault();
-              void api.tabs.close(t.id);
-            } else if (e.button === 0) {
-              onTab();
-              void api.tabs.activate(t.id);
-            }
-          }}
-          onContextMenu={(e) => {
-            e.preventDefault();
-            void api.tabs.contextMenu(t.id);
-          }}
-          title={t.title}
-        >
-          <Favicon tab={t} />
-          <span className="tab-title">{t.title}</span>
-          <button
-            className="icon-btn tab-close"
-            aria-label="Закрыть вкладку"
-            onMouseDown={(e) => e.stopPropagation()}
-            onClick={() => void api.tabs.close(t.id)}
+              void api.tabs.contextMenu(t.id);
+            }}
+            title={t.title}
           >
-            <I.Close size={12} />
-          </button>
-        </div>
-      ))}
-      {settings && (
-        <div
-          className={`tab settings-tab ${settings.active ? 'active' : ''}`}
-          title="Настройки"
-          onMouseDown={(e) => {
-            if (e.button === 1) {
-              e.preventDefault();
-              settings.onClose();
-            } else if (e.button === 0) settings.onSelect();
-          }}
-        >
-          <span className="tab-blank" aria-hidden="true">
-            <I.Gear size={14} />
-          </span>
-          <span className="tab-title">Настройки</span>
-          <button className="icon-btn tab-close" aria-label="Закрыть настройки" onMouseDown={(e) => e.stopPropagation()} onClick={settings.onClose}>
-            <I.Close size={12} />
-          </button>
-        </div>
-      )}
+            <Favicon tab={t} />
+            <span className="tab-title">{t.title}</span>
+            <button className="icon-btn tab-close" aria-label="Закрыть вкладку" onMouseDown={(e) => e.stopPropagation()} onClick={() => void api.tabs.close(t.id)}>
+              <I.Close size={12} />
+            </button>
+          </div>
+        );
+      })}
       <button className="icon-btn new-tab" aria-label="Новая вкладка" title="Новая вкладка (Ctrl/⌘+T)" onClick={() => api.tabs.create().catch((e) => onToast(errText(e)))}>
         <I.Plus />
       </button>
@@ -304,13 +370,12 @@ function Toolbar(props: {
   tunnel: TunnelState;
   bookmarks: BookmarksState;
   settingsActive: boolean;
-  toggleSettings: (s?: SettingsSection) => void;
-  toggleBookmarks: () => void;
-  onNavigate: () => void;
+  /** an address typed while the settings tab is in front */
+  onSettingsQuery: (input: string) => void;
   run: Run;
   updateReady: boolean;
 }) {
-  const { tab, locked, tunnel, bookmarks, settingsActive, toggleSettings, toggleBookmarks, onNavigate, run, updateReady } = props;
+  const { tab, locked, tunnel, bookmarks, settingsActive, onSettingsQuery, run, updateReady } = props;
   const [value, setValue] = useState('');
   const [editing, setEditing] = useState(false);
   const input = useRef<HTMLInputElement>(null);
@@ -328,11 +393,8 @@ function Toolbar(props: {
     if (!value.trim()) return;
     setEditing(false);
     input.current?.blur();
-    // From the settings tab the site opens in a tab of its own: the page under it stays.
-    if (settingsActive) {
-      onNavigate();
-      void run(() => api.tabs.create(value));
-    } else if (tab) void run(() => api.tabs.navigate(tab.id, value));
+    if (settingsActive) onSettingsQuery(value);
+    else if (tab) void run(() => api.tabs.navigate(tab.id, value));
   };
   const onKey = (e: KeyboardEvent) => {
     if (e.key === 'Escape') {
@@ -380,10 +442,10 @@ function Toolbar(props: {
         />
         <BookmarkStar tab={tab} bookmarks={bookmarks} locked={locked} run={run} />
       </form>
-      <button className="icon-btn" onClick={toggleBookmarks} aria-label="Закладки" title="Закладки (Ctrl/⌘+Alt+B)">
+      <button className="icon-btn" onClick={() => openPanelUnder('bookmarks')} aria-label="Закладки" title="Закладки (Ctrl/⌘+Alt+B)">
         <I.Bookmarks />
       </button>
-      <StatusPill tunnel={tunnel} onClick={() => toggleSettings('connection')} />
+      <StatusPill tunnel={tunnel} onClick={() => openPanelUnder('connection')} />
       <button
         className={`icon-btn ${updateReady ? 'badge' : ''}`}
         onClick={(e) => {
@@ -413,7 +475,7 @@ function UpdateBanner({ update, run }: { update: UpdateState; run: Run }) {
               {showNotes ? 'Скрыть' : 'Что нового'}
             </button>
           )}
-          {showNotes && <pre className="notes">{update.notes}</pre>}
+          {showNotes && update.notes && <Markdown text={update.notes} className="notes" />}
         </span>
         <button className="btn small primary" onClick={() => run(() => api.updates.install())}>
           Обновить
@@ -605,15 +667,9 @@ function LockScreen(props: {
 function SiteClock({ zone }: { zone: string }) {
   const now = useNow();
   return (
-    <div className="start-note" title={`Часовой пояс ${zone}. Так сайты не отличат вас от жителя страны сервера по часам и языку.`}>
+    <div className="start-note" title={`Время для сайтов (${zone}): так они не отличат вас от жителя страны сервера.`}>
       <I.Clock size={14} />
-      <span>Для сайтов</span>
-      <time className="clock" dateTime={now.toISOString()}>
-        {timeIn(zone, now)}
-      </time>
-      <span>{zoneLabel(zone, now)}</span>
-      <span className="sep" aria-hidden="true" />
-      <span>English (US)</span>
+      <span>Для сайтов: {siteTime(zone, now)}</span>
     </div>
   );
 }
@@ -633,7 +689,7 @@ function StartPage({ tab, tunnel, bookmarks, run }: { tab: TabInfo; tunnel: Tunn
                 {flag(tunnel.exit.country)} {ipText(tunnel.exit.ip)}
               </span>
               <span className="sep" aria-hidden="true" />
-              <Ping tunnel={tunnel} run={run} />
+              <Ping tunnel={tunnel} onMeasure={() => run(() => api.tunnel.measure())} />
             </>
           )}
         </div>

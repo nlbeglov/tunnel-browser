@@ -2,8 +2,9 @@
 // settings that belong to this window's profile only, and search, which hides the rows that
 // do not match (a card or section with no row left is hidden by CSS).
 
-import { createContext, useContext, type ReactNode } from 'react';
+import { createContext, useContext, useState, type ReactNode } from 'react';
 import type { WindowProfileInfo } from '../shared/types';
+import * as I from './icons';
 
 /** The search query, lower case; empty when not searching. */
 export const Query = createContext('');
@@ -14,13 +15,41 @@ export function useMatch(...texts: Array<string | undefined>): boolean {
   return texts.some((t) => t?.toLowerCase().includes(q));
 }
 
-export function Row(props: { title: ReactNode; desc?: ReactNode; children?: ReactNode; search?: string; className?: string }) {
-  const { title, desc, children, search, className } = props;
-  const visible = useMatch(typeof title === 'string' ? title : undefined, typeof desc === 'string' ? desc : undefined, search);
+/** An explanation behind a small "?" next to a title: shown on hover, or on click for keyboard and touch. */
+export function Hint({ text }: { text: string }) {
+  const [open, setOpen] = useState(false);
+  return (
+    <span className={`s-hint ${open ? 'open' : ''}`} onMouseLeave={() => setOpen(false)}>
+      <button
+        type="button"
+        className="s-hint-btn"
+        aria-label={`Подсказка: ${text}`}
+        aria-expanded={open}
+        onClick={(e) => {
+          e.stopPropagation();
+          setOpen(!open);
+        }}
+        onBlur={() => setOpen(false)}
+      >
+        <I.Help size={14} />
+      </button>
+      <span className="s-hint-pop" role="tooltip">
+        {text}
+      </span>
+    </span>
+  );
+}
+
+export function Row(props: { title: ReactNode; desc?: ReactNode; hint?: string; children?: ReactNode; search?: string; className?: string }) {
+  const { title, desc, hint, children, search, className } = props;
+  const visible = useMatch(typeof title === 'string' ? title : undefined, typeof desc === 'string' ? desc : undefined, hint, search);
   return (
     <div className={`s-row ${className ?? ''}`} hidden={!visible}>
       <div className="s-text">
-        <div className="s-title">{title}</div>
+        <div className="s-title">
+          {title}
+          {hint && <Hint text={hint} />}
+        </div>
         {desc && <div className="s-desc">{desc}</div>}
       </div>
       {children && <div className="s-control">{children}</div>}
@@ -28,12 +57,13 @@ export function Row(props: { title: ReactNode; desc?: ReactNode; children?: Reac
   );
 }
 
-export function Card(props: { title?: string; scope?: ReactNode; children: ReactNode; className?: string }) {
+export function Card(props: { title?: string; hint?: string; scope?: ReactNode; children: ReactNode; className?: string }) {
   return (
     <section className={`s-card ${props.className ?? ''}`}>
       {props.title && (
         <h3 className="s-card-title">
           {props.title}
+          {props.hint && <Hint text={props.hint} />}
           {props.scope}
         </h3>
       )}

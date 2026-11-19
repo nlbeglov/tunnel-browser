@@ -10,9 +10,10 @@ import {
   type WebContents,
 } from 'electron';
 import { randomUUID } from 'node:crypto';
+import { readFile, writeFile } from 'node:fs/promises';
 import { join } from 'node:path';
 import { pathToFileURL } from 'node:url';
-import type { AppMenuEntry, BrowserSettings, ImportResult, OpenMode, Subscription, UiRect, WindowProfilesState } from '../shared/types';
+import type { AppMenuEntry, BrowserSettings, ImportResult, OpenMode, ReleaseHistory, Subscription, UiRect, WindowProfilesState } from '../shared/types';
 import { BrowserData } from './browserData';
 import { parseMany, serverKey, serverKeyOfLink } from './links';
 import type { UaMetadata } from './pageGuard';
@@ -176,10 +177,17 @@ async function main() {
   });
   updater.on('change', (s) => windows.forEach((w) => w.send('updates:changed', s)));
   store.on('change', () => {
-    for (const w of windows) w.send('profiles:changed', w.serversState());
+    for (const w of windows) {
+      w.send('profiles:changed', w.serversState());
+      w.refreshPanel();
+    }
     broadcastProfiles();
   });
-  browser.on('bookmarks', (profileId, st) => windows.find((w) => w.profileId === profileId)?.send('bookmarks:changed', st));
+  browser.on('bookmarks', (profileId, st) => {
+    const w = windows.find((x) => x.profileId === profileId);
+    w?.send('bookmarks:changed', st);
+    w?.refreshPanel();
+  });
   browser.on('settings', (st) => {
     windows.forEach((w) => w.send('settings:changed', st));
     const item = Menu.getApplicationMenu()?.getMenuItemById('bookmarks-bar');
@@ -279,9 +287,7 @@ async function main() {
 
   // ---- this window's tabs
   handle('tabs:get', (w) => w.tabs.state());
-  handle('tabs:create', (w, input: unknown) => {
-    w.tabs.create(input === undefined ? undefined : str(input, 8000));
-  });
+  handle('tabs:create', (w, input: unknown) => w.tabs.create(input === undefined ? undefined : str(input, 8000)));
   handle('tabs:close', (w, id: unknown) => w.tabs.close(int(id)));
   handle('tabs:activate', (w, id: unknown) => w.tabs.activate(int(id)));
   handle('tabs:navigate', (w, id: unknown, input: unknown) => w.tabs.navigate(int(id), str(input, 8000)));
@@ -405,9 +411,26 @@ async function main() {
       else if (id.startsWith('profile:')) void openWindow(id.slice('profile:'.length), w.win);
     });
   });
-  handle('updates:history', () => releaseHistory());
+  // The version history loads only when asked (the buttons in Settings › About) and is kept
+  // in a file, so it is there after a restart without a request.
+  const historyFile = join(app.getPath('userData'), 'releases.json');
+  let history: ReleaseHistory | null | undefined;
+  handle('updates:history', async () => {
+    if (history === undefined) history = await readFile(historyFile, 'utf8').then((t) => JSON.parse(t) as ReleaseHistory, () => null);
+    return history;
+  });
+  handle('updates:refresh-history', async () => {
+    history = { entries: await releaseHistory(), at: Date.now() };
+    await writeFile(historyFile, JSON.stringify(history)).catch(() => {});
+    return history;
+  });
 
   const xrayVersion = coreVersion(corePath);
+  handle('app:panel', (w, kind: unknown, right: unknown, top: unknown, editId: unknown) => {
+    const num = (v: unknown) => (typeof v === 'number' && Number.isFinite(v) ? Math.max(0, Math.round(v)) : 0);
+    if (kind !== 'connection' && kind !== 'bookmarks') return;
+    return w.showPanel(kind, { right: num(right), top: num(top) }, typeof editId === 'string' ? editId.slice(0, 100) : undefined);
+  });
   handle('app:info', async () => ({
     version: app.getVersion(),
     platform: `${process.platform}-${process.arch}`,

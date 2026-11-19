@@ -159,12 +159,28 @@ export interface AppMenuItem {
   sub?: AppMenuEntry[];
 }
 export type AppMenuEntry = AppMenuItem | 'separator';
-export interface AppMenuShow {
-  items: AppMenuEntry[];
-  /** right edge and top of the menu, in window coordinates: it opens leftwards from the button */
+
+/** The panels that open under toolbar buttons, over the page (main/popup.ts, renderer/popup.tsx). */
+export type PopupKind = 'menu' | 'connection' | 'bookmarks';
+export interface ConnectionPopupData {
+  tunnel: TunnelState;
+  server?: ServerProfile;
+  me: Pick<WindowProfileInfo, 'serverName' | 'serverMissing'>;
+}
+export interface BookmarksPopupData {
+  bookmarks: BookmarksState;
+  /** open this one for editing */
+  editId?: string;
+}
+export type PopupData =
+  | { kind: 'menu'; items: AppMenuEntry[] }
+  | { kind: 'connection'; data: ConnectionPopupData }
+  | { kind: 'bookmarks'; data: BookmarksPopupData };
+export type PopupShow = PopupData & {
+  /** right edge and top of the panel, in window coordinates: it opens leftwards from the button */
   right: number;
   top: number;
-}
+};
 
 /** What the menu's tab commands ask of the settings tab when it is open. */
 export type SettingsTabCommand = 'close' | 'next' | 'prev';
@@ -220,6 +236,13 @@ export interface ReleaseEntry {
   url: string;
 }
 
+/** The version history as last loaded from GitHub (it loads only on request). */
+export interface ReleaseHistory {
+  entries: ReleaseEntry[];
+  /** when it was loaded, ms */
+  at: number;
+}
+
 export interface ProfilesState {
   profiles: ServerProfile[];
   subscriptions: Subscription[];
@@ -260,7 +283,8 @@ export interface BridgeApi {
   };
   tabs: {
     get(): Promise<TabsState>;
-    create(input?: string): Promise<void>;
+    /** resolves with the new tab's id */
+    create(input?: string): Promise<number>;
     close(id: number): Promise<void>;
     activate(id: number): Promise<void>;
     navigate(id: number, input: string): Promise<void>;
@@ -276,6 +300,8 @@ export interface BridgeApi {
     onChange(cb: (state: TabsState) => void): () => void;
     onFocusAddressBar(cb: () => void): () => void;
     onSettingsTabCommand(cb: (cmd: SettingsTabCommand) => void): () => void;
+    /** a bookmark was opened in the current tab while the settings tab is in front */
+    onSettingsNavigate(cb: (url: string) => void): () => void;
   };
   bookmarks: {
     get(): Promise<BookmarksState>;
@@ -301,7 +327,10 @@ export interface BridgeApi {
     get(): Promise<UpdateState>;
     check(): Promise<void>;
     install(): Promise<void>;
-    history(): Promise<ReleaseEntry[]>;
+    /** the history loaded last time, if any: no request */
+    history(): Promise<ReleaseHistory | null>;
+    /** loads the history from GitHub now and keeps it */
+    refreshHistory(): Promise<ReleaseHistory>;
     onChange(cb: (state: UpdateState) => void): () => void;
   };
   app: {
@@ -314,6 +343,8 @@ export interface BridgeApi {
     onOpenPanel(cb: (panel: PanelName, bookmarkId?: string) => void): () => void;
     /** the ⋮ menu under the button: its right edge and top, in window coordinates */
     mainMenu(right: number, top: number): Promise<void>;
+    /** the connection panel (under the IP) or the bookmarks panel, under its button */
+    panel(kind: 'connection' | 'bookmarks', right: number, top: number, editId?: string): Promise<void>;
     onFullScreen(cb: (full: boolean) => void): () => void;
     /** Windows: colours for the window buttons drawn over the tab strip */
     setTitleBarColors(colors: { color: string; symbolColor: string }): void;

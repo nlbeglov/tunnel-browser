@@ -17,18 +17,22 @@ export function useNow(): Date {
   return now;
 }
 
-/** 14:05:09 in that zone. */
-export function timeIn(zone: string, now: Date): string {
+/** 14:05 (or 14:05:09) in that zone. */
+export function timeIn(zone: string, now: Date, seconds = false): string {
   try {
-    return new Intl.DateTimeFormat('ru-RU', { timeZone: zone, hour: '2-digit', minute: '2-digit', second: '2-digit' }).format(now);
+    return new Intl.DateTimeFormat('ru-RU', { timeZone: zone, hour: '2-digit', minute: '2-digit', ...(seconds ? { second: '2-digit' } : {}) }).format(now);
   } catch {
     return '';
   }
 }
 
-/** "Центральная Европа, GMT+1"; for UTC just "UTC". */
-export function zoneLabel(zone: string, now: Date): string {
-  if (zone === 'UTC' || zone === 'Etc/UTC') return 'UTC';
+/**
+ * "Центральная Европа, Berlin, GMT+1, 14:05": the zone's name, its city (from the zone id, as
+ * is), the offset and the time there. UTC: "UTC, 14:05".
+ */
+export function siteTime(zone: string, now: Date, seconds = false): string {
+  const time = timeIn(zone, now, seconds);
+  if (zone === 'UTC' || zone === 'Etc/UTC') return ['UTC', time].filter(Boolean).join(', ');
   const part = (timeZoneName: 'longGeneric' | 'shortOffset') => {
     try {
       return new Intl.DateTimeFormat('ru-RU', { timeZone: zone, timeZoneName }).formatToParts(now).find((p) => p.type === 'timeZoneName')?.value ?? '';
@@ -36,8 +40,9 @@ export function zoneLabel(zone: string, now: Date): string {
       return '';
     }
   };
+  const region = part('longGeneric').replace(/,\s*(стандартное|летнее) время$/, '');
+  const city = zone.split('/').pop()?.replace(/_/g, ' ') ?? '';
   const offset = part('shortOffset').replace('-', '−');
-  const name = part('longGeneric');
-  if (!name || name.startsWith('GMT')) return offset || zone;
-  return offset ? `${name}, ${offset}` : name;
+  const parts = [region.startsWith('GMT') ? '' : region, city === region ? '' : city, offset, time];
+  return parts.filter(Boolean).join(', ');
 }
