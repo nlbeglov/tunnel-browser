@@ -5,7 +5,7 @@ import { useEffect, useLayoutEffect, useState } from 'react';
 import type { ProfilesState, TunnelState, WindowProfileInfo, WindowProfilesState } from '../shared/types';
 import { api, type Run } from './bridge';
 import { Card, useMatch } from './settingsKit';
-import { flag } from './format';
+import { flag, ipText } from './format';
 import * as I from './icons';
 
 const isMac = api.app.platform === 'darwin';
@@ -161,7 +161,7 @@ function ProfileRow({ p, state, run }: { p: WindowProfileInfo; state: WindowProf
   const where = p.serverMissing
     ? `Сервера «${p.serverName}» больше нет в подписках`
     : p.serverName
-      ? `${p.serverName}${p.exit ? `, ${p.exit.live ? 'сейчас' : 'в прошлый раз'} ${p.exit.ip}` : ''}`
+      ? `${p.serverName}${p.exit ? `, ${p.exit.live ? 'сейчас' : 'в прошлый раз'} ${ipText(p.exit.ip)}` : ''}`
       : 'Сервер ещё не выбран';
 
   return (

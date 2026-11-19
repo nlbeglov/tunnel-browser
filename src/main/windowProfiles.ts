@@ -58,7 +58,7 @@ export interface BrowserDataV1 {
   lastExitIp?: string;
 }
 
-export const DEFAULT_SETTINGS: BrowserSettings = { restoreTabs: true, showBookmarksBar: true, warnOnServerSwitch: true };
+export const DEFAULT_SETTINGS: BrowserSettings = { restoreTabs: true, showBookmarksBar: true, warnOnServerSwitch: true, bookmarksHint: true };
 
 /** The storage every version before profiles used: the first profile keeps it, cookies and all. */
 export const FIRST_PARTITION = 'persist:tunnel';

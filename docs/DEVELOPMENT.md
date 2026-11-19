@@ -52,8 +52,15 @@ electron-updater ходит через сеть Chromium, поэтому его 
 компьютера ([identity.ts](../src/main/identity.ts)):
 - часовой пояс — по стране выхода из `/cdn-cgi/trace` (`loc`), а в странах с несколькими
   поясами — по дата-центру Cloudflare (`colo`); таблица стран сгенерирована из tzdata
-  ([timezones.ts](../src/main/timezones.ts)). Лишних запросов нет: trace и так запрашивается
-  при подключении. Страна неизвестна — `UTC`;
+  ([timezones.ts](../src/main/timezones.ts)). Лишних запросов нет: IP и так узнаётся при
+  подключении. Страна неизвестна — `UTC`;
+- IP и страна выхода узнаются по очереди у `www.cloudflare.com/cdn-cgi/trace`,
+  `one.one.one.one/cdn-cgi/trace`, `ifconfig.co/json` и `ipinfo.io/json` (`IP_SOURCES` в
+  [health.ts](../src/main/health.ts)), всё через туннель: побеждает первый, кто ответил
+  настоящим IP. Cloudflare иногда показывает вместо trace страницу проверки — тогда работают
+  запасные. Если они называют часовой пояс, он берётся вместо пояса страны по умолчанию. Если
+  не ответил никто, туннель всё равно работает, IP показывается как «не определён», а ответы
+  сервисов видны в настройках (`ipError`);
 - `Intl`-локаль, `navigator.languages` и `Accept-Language` — `en-US` для всех.
 
 Ключа Chromium для этого нет, поэтому каждая страница работает под DevTools-сессией

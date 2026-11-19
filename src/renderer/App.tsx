@@ -1,8 +1,8 @@
 import { useCallback, useEffect, useLayoutEffect, useRef, useState, type FormEvent, type KeyboardEvent, type ReactNode } from 'react';
-import type { BookmarksState, ProfilesState, TabInfo, TabsState, TunnelState, UpdateState, WindowProfileInfo, WindowProfilesState } from '../shared/types';
+import type { BookmarksState, BrowserSettings, ProfilesState, TabInfo, TabsState, TunnelState, UpdateState, WindowProfileInfo, WindowProfilesState } from '../shared/types';
 import { BookmarkStar, BookmarkTiles, BookmarksBar, BookmarksPanel } from './bookmarks';
 import { SiteIcon, api, errText, useBridge, type Run } from './bridge';
-import { flag } from './format';
+import { flag, ipText } from './format';
 import * as I from './icons';
 import { Ping, SettingsView, type SettingsSection } from './settings';
 import { ProfileChip, useProfileChrome } from './windows';
@@ -16,6 +16,7 @@ export function App() {
   const update = useBridge<UpdateState>({ status: 'idle', currentVersion: '' }, api.updates.get, api.updates.onChange);
   const bookmarks = useBridge<BookmarksState>({ items: [], showBar: true }, api.bookmarks.get, api.bookmarks.onChange);
   const windows = useBridge<WindowProfilesState>({ profiles: [], freeColors: [], current: '' }, api.windows.get, api.windows.onChange);
+  const prefs = useBridge<BrowserSettings | null>(null, api.app.settings, api.app.onSettingsChange);
   const me = windows.profiles.find((p) => p.current);
   // Settings are a tab of their own in the strip (no page, no address). While it is the
   // active tab, the page of the selected tab is hidden behind it, not unloaded.
@@ -30,9 +31,11 @@ export function App() {
   const locked = tunnel.status !== 'connected';
   const active = tabs.tabs.find((t) => t.id === tabs.activeId) ?? null;
 
+  const lastRef = useRef(lastSection);
   const openSettings = useCallback((s: SettingsSection) => {
     setSettings({ section: s, active: true });
     setLastSection(s);
+    lastRef.current = s;
   }, []);
   /** Another tab comes to the front; the settings tab stays in the strip. */
   const leaveSettings = useCallback(() => setSettings((st) => (st?.active ? { ...st, active: false } : st)), []);
@@ -78,7 +81,7 @@ export function App() {
         if (p === 'bookmarks') {
           setBookmarksOpen(true);
           setEditBookmark(id);
-        } else openSettings(p === 'servers' ? 'connection' : p === 'profiles' ? 'profiles' : 'connection');
+        } else openSettings(p === 'servers' ? 'connection' : p === 'profiles' ? 'profiles' : lastRef.current);
       }),
     [],
   );
@@ -118,7 +121,7 @@ export function App() {
         run={run}
         updateReady={update.status === 'available'}
       />
-      {bookmarks.showBar && !locked && <BookmarksBar bookmarks={bookmarks} run={run} />}
+      {bookmarks.showBar && !locked && (bookmarks.items.length > 0 || prefs?.bookmarksHint) && <BookmarksBar bookmarks={bookmarks} run={run} />}
       <UpdateBanner update={update} run={run} />
       {tunnel.status === 'degraded' && (
         <div className="banner warn">
@@ -276,7 +279,9 @@ function StatusPill({ tunnel, onClick }: { tunnel: TunnelState; onClick: () => v
   const s = tunnel.status;
   const label =
     s === 'connected'
-      ? `${flag(tunnel.exit?.country)} ${tunnel.exit?.ip ?? ''}`.trim() || tunnel.profileName
+      ? tunnel.exit && tunnel.exit.ip !== '?'
+        ? `${flag(tunnel.exit.country)} ${tunnel.exit.ip}`.trim()
+        : 'Подключено'
       : s === 'degraded'
         ? 'Туннель недоступен'
         : s === 'connecting'
@@ -379,11 +384,14 @@ function Toolbar(props: {
       </button>
       <StatusPill tunnel={tunnel} onClick={() => toggleSettings('connection')} />
       <button
-        className={`icon-btn ${updateReady ? 'badge' : ''} ${settingsActive ? 'on' : ''}`}
-        onClick={() => toggleSettings()}
-        aria-label="Настройки"
-        aria-pressed={settingsActive}
-        title={updateReady ? 'Настройки · есть обновление' : 'Настройки'}
+        className={`icon-btn ${updateReady ? 'badge' : ''}`}
+        onClick={(e) => {
+          const r = e.currentTarget.getBoundingClientRect();
+          void api.app.mainMenu(r.left, r.bottom + 2);
+        }}
+        aria-label="Меню"
+        aria-haspopup="menu"
+        title={updateReady ? 'Меню: есть обновление' : 'Меню'}
       >
         <I.Menu />
       </button>
@@ -604,7 +612,7 @@ function StartPage({ tab, tunnel, bookmarks, run }: { tab: TabInfo; tunnel: Tunn
             <>
               <span className="sep" aria-hidden="true" />
               <span>
-                {flag(tunnel.exit.country)} {tunnel.exit.ip}
+                {flag(tunnel.exit.country)} {ipText(tunnel.exit.ip)}
               </span>
               <span className="sep" aria-hidden="true" />
               <Ping tunnel={tunnel} run={run} />

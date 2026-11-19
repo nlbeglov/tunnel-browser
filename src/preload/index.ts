@@ -79,6 +79,7 @@ const api: BridgeApi = {
     settings: () => call('app:settings'),
     setSettings: (patch) => call('app:set-settings', patch),
     onSettingsChange: (cb) => listen('settings:changed', cb),
+    mainMenu: (x, y) => call('app:main-menu', x, y),
     onOpenPanel: (cb) => {
       const fn = (_e: IpcRendererEvent, panel: PanelName, bookmarkId?: string) => cb(panel, bookmarkId);
       ipcRenderer.on('ui:open-panel', fn);

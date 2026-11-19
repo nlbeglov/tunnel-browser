@@ -86,6 +86,8 @@ export interface TunnelState {
     latencyMs: number;
     /** the time zone pages are given, matching the exit */
     timezone?: string;
+    /** why the IP is unknown (ip is '?') */
+    ipError?: string;
   };
   since?: number;
 }
@@ -129,6 +131,8 @@ export interface BrowserSettings {
   showBookmarksBar: boolean;
   /** ask before sites see a new exit IP while they hold cookies */
   warnOnServerSwitch: boolean;
+  /** the "how to add a bookmark" hint in the empty bookmarks bar: until closed or the first bookmark */
+  bookmarksHint: boolean;
 }
 
 export type OpenMode = 'current' | 'new-tab' | 'background';
@@ -285,6 +289,8 @@ export interface BridgeApi {
     setSettings(patch: Partial<BrowserSettings>): Promise<BrowserSettings>;
     onSettingsChange(cb: (s: BrowserSettings) => void): () => void;
     onOpenPanel(cb: (panel: PanelName, bookmarkId?: string) => void): () => void;
+    /** the ⋮ menu, under the button (window coordinates) */
+    mainMenu(x: number, y: number): Promise<void>;
     onFullScreen(cb: (full: boolean) => void): () => void;
     /** Windows: colours for the window buttons drawn over the tab strip */
     setTitleBarColors(colors: { color: string; symbolColor: string }): void;

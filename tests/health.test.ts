@@ -5,7 +5,8 @@
 
 import net from 'node:net';
 import { afterAll, beforeAll, describe, expect, it } from 'vitest';
-import { getViaProxy } from '../src/main/health';
+import { IP_SOURCES, dechunk, getViaProxy, located } from '../src/main/health';
+import { exitTimezone } from '../src/main/identity';
 
 type Mode = 'corrupt-then-reset' | 'garbage-then-reset' | 'reset-after-200' | 'reset-after-first-data';
 
@@ -79,4 +80,47 @@ describe.skipIf(!online)('health probe survives broken connections', () => {
       expect(uncaught.map(String)).toEqual([]);
     }, 30_000);
   }
+});
+
+describe('exit IP lookup', () => {
+  it('chunked bodies are put back together', () => {
+    const body = Buffer.from('4\r\nip=1\r\n9\r\n.2.3.4\nlo\r\n6\r\nc=NL\n\n\r\n0\r\n\r\n');
+    expect(dechunk(body).toString()).toBe('ip=1.2.3.4\nloc=NL\n\n');
+  });
+
+  it('reads the Cloudflare trace and the JSON services', () => {
+    const [cf, , ifconfig, ipinfo] = IP_SOURCES;
+    expect(located(cf.parse('fl=1\r\nh=www.cloudflare.com\r\nip=203.0.113.9\r\nts=1\r\ncolo=AMS\r\nloc=NL\r\n'))).toEqual({
+      ip: '203.0.113.9',
+      country: 'NL',
+      colo: 'AMS',
+      zone: undefined,
+    });
+    expect(located(ifconfig.parse('{"ip":"198.51.100.4","country":"Germany","country_iso":"DE","time_zone":"Europe/Berlin"}'))).toEqual({
+      ip: '198.51.100.4',
+      country: 'DE',
+      colo: undefined,
+      zone: 'Europe/Berlin',
+    });
+    expect(located(ipinfo.parse('{\n  "ip": "2001:db8::1",\n  "country": "US",\n  "timezone": "America/Chicago"\n}'))?.zone).toBe('America/Chicago');
+  });
+
+  it('a check page instead of the trace is not an IP', () => {
+    const [cf] = IP_SOURCES;
+    expect(located(cf.parse('<!DOCTYPE html><title>Just a moment...</title>'))).toBeUndefined();
+    expect(located({ ip: 'not an ip' })).toBeUndefined();
+    expect(located({ ip: '203.0.113.9', country: 'Netherlands', zone: '<script>' })).toEqual({
+      ip: '203.0.113.9',
+      country: undefined,
+      colo: undefined,
+      zone: undefined,
+    });
+  });
+
+  it('the zone an IP service names is used when Cloudflare does not tell the region', () => {
+    expect(exitTimezone('US', undefined, 'America/Chicago')).toBe('America/Chicago');
+    expect(exitTimezone('US', 'LAX', 'America/Chicago')).toBe('America/Los_Angeles');
+    expect(exitTimezone('US', undefined, 'Mars/Olympus')).toBe(exitTimezone('US'));
+    expect(exitTimezone(undefined, undefined, 'Europe/Berlin')).toBe('UTC');
+  });
 });

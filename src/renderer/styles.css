@@ -681,9 +681,23 @@ textarea {
 
 .bookmarks-bar.empty {
   gap: 6px;
-  padding: 0 14px;
+  padding: 0 6px 0 14px;
   color: var(--muted);
   font-size: 12px;
+}
+
+.bookmarks-bar.empty > span {
+  flex: 1;
+  display: flex;
+  align-items: center;
+  gap: 4px;
+}
+
+.bm-hint-close {
+  width: 22px;
+  height: 22px;
+  border-radius: 50%;
+  color: var(--muted);
 }
 
 .bm-chips {

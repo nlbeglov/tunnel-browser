@@ -42,7 +42,7 @@ describe('migration from one window to profiles', () => {
     // Server ids change when a subscription refreshes, links do not.
     expect(p.lastServerLink).toBe('vless://old');
     expect(p.serverLink).toBe('vless://selected');
-    expect(d.settings).toEqual({ restoreTabs: true, showBookmarksBar: false, warnOnServerSwitch: true });
+    expect(d.settings).toEqual({ restoreTabs: true, showBookmarksBar: false, warnOnServerSwitch: true, bookmarksHint: true });
     expect(d.openProfiles).toEqual([FIRST_PROFILE_ID]);
     expect(d.declinedMoveToApplications).toBe(true);
   });

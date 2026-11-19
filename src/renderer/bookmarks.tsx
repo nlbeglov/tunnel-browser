@@ -67,9 +67,15 @@ export function BookmarksBar({ bookmarks, run }: { bookmarks: BookmarksState; ru
   }, [bookmarks.items]);
 
   if (!bookmarks.items.length) {
+    // Shown once: until it is closed or the first bookmark is added (App.tsx decides).
     return (
       <div className="bookmarks-bar empty">
-        Чтобы добавить сайт в закладки, нажмите <I.Star size={12} /> в адресной строке или Ctrl/⌘+D
+        <span>
+          Закладки появятся здесь: нажмите <I.Star size={12} /> в адресной строке или Ctrl/⌘+D
+        </span>
+        <button className="icon-btn bm-hint-close" aria-label="Больше не показывать подсказку" title="Больше не показывать" onClick={() => void api.app.setSettings({ bookmarksHint: false })}>
+          <I.Close size={12} />
+        </button>
       </div>
     );
   }
