@@ -16,7 +16,14 @@ export interface ProfileRecord {
   color: string;
   /** Chromium storage of this profile's pages (cookies, logins, cache); never shared */
   partition: string;
-  /** the server this profile connects to, by link: ids change when a subscription refreshes */
+  /**
+   * The server this profile connects to, by its connection settings (links.ts serverKey):
+   * ids are re-created and names change when a subscription refreshes.
+   */
+  serverKey?: string;
+  /** that server's name when last seen, to name it if it disappears */
+  serverName?: string;
+  /** 0.4.0 kept the server by link (it broke when a provider renamed servers); read once */
   serverLink?: string;
   bookmarks: Bookmark[];
   session?: { tabs: SessionTab[]; activeIndex: number };
@@ -24,6 +31,8 @@ export interface ProfileRecord {
   lastExitIp?: string;
   lastExitCountry?: string;
   /** the server of the last working connection, for when its IP was not known */
+  lastServerKey?: string;
+  /** 0.4.0 */
   lastServerLink?: string;
   createdAt: number;
 }
@@ -80,6 +89,29 @@ export function cleanProfileName(raw: unknown): string {
   const name = raw.replace(/\s+/g, ' ').trim().slice(0, 40);
   if (!name) throw new Error('укажите название профиля');
   return name;
+}
+
+/**
+ * Servers kept by link (0.4.0, and the migration below) get their key. The link itself is
+ * parsed, so a server is still found after the provider renamed it.
+ */
+export function upgradeServerKeys(data: BrowserDataV2, keyOf: (link: string) => { key: string; name: string } | undefined): BrowserDataV2 {
+  for (const p of data.profiles) {
+    if (p.serverLink) {
+      const k = keyOf(p.serverLink);
+      if (k && !p.serverKey) {
+        p.serverKey = k.key;
+        p.serverName = k.name;
+      }
+      delete p.serverLink;
+    }
+    if (p.lastServerLink) {
+      const k = keyOf(p.lastServerLink);
+      if (k && !p.lastServerKey) p.lastServerKey = k.key;
+      delete p.lastServerLink;
+    }
+  }
+  return data;
 }
 
 /**

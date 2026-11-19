@@ -4,6 +4,7 @@
 import { useEffect, useLayoutEffect, useState } from 'react';
 import type { ProfilesState, TunnelState, WindowProfileInfo, WindowProfilesState } from '../shared/types';
 import { api, type Run } from './bridge';
+import { Card, useMatch } from './settingsKit';
 import { flag } from './format';
 import * as I from './icons';
 
@@ -120,17 +121,15 @@ export function ProfileChip({ me, tunnel, onClick }: { me: WindowProfileInfo | u
   );
 }
 
-function Avatar({ p, size = 36 }: { p: { name: string; color: string }; size?: number }) {
+/**
+ * A profile as the tab strip shows it: its colour, the flag of its exit (the live one, or the
+ * one sites saw last) and its name. This is the only picture a profile has.
+ */
+export function ProfileBadge({ p }: { p: WindowProfileInfo }) {
   return (
-    <span
-      className={`avatar ink-${inkOn(p.color)}`}
-      aria-hidden="true"
-      ref={(el) => {
-        el?.style.setProperty('--c', p.color);
-        el?.style.setProperty('--size', `${size}px`);
-      }}
-    >
-      {(p.name[0] ?? '•').toUpperCase()}
+    <span className={`profile-chip static ink-${inkOn(p.color)}`} ref={(el) => el?.style.setProperty('--profile', p.color)}>
+      {p.exit?.country ? <span className="chip-flag">{flag(p.exit.country)}</span> : <span className="chip-dot" aria-hidden="true" />}
+      <span className="chip-name">{p.name}</span>
     </span>
   );
 }
@@ -138,15 +137,10 @@ function Avatar({ p, size = 36 }: { p: { name: string; color: string }; size?: n
 function Swatches(props: { colors: string[]; value: string; onPick: (c: string) => void; label: string }) {
   return (
     <fieldset className="swatches">
-      <legend className="muted small">{props.label}</legend>
+      <legend className="s-desc">{props.label}</legend>
       <div className="swatch-row">
         {props.colors.map((c) => (
-          <label
-            key={c}
-            className={`swatch ${props.value === c ? 'picked' : ''}`}
-            ref={(el) => el?.style.setProperty('--c', c)}
-            title={c}
-          >
+          <label key={c} className={`swatch ${props.value === c ? 'picked' : ''}`} ref={(el) => el?.style.setProperty('--c', c)} title={c}>
             <input type="radio" name={props.label} checked={props.value === c} onChange={() => props.onPick(c)} aria-label={`Цвет ${c}`} />
           </label>
         ))}
@@ -163,43 +157,42 @@ function ProfileRow({ p, state, run }: { p: WindowProfileInfo; state: WindowProf
     setName(p.name);
     setColor(p.color);
   }, [p.name, p.color]);
+  const visible = useMatch(p.name, p.serverName, p.exit?.ip);
+  const where = p.serverMissing
+    ? `Сервера «${p.serverName}» больше нет в подписках`
+    : p.serverName
+      ? `${p.serverName}${p.exit ? `, ${p.exit.live ? 'сейчас' : 'в прошлый раз'} ${p.exit.ip}` : ''}`
+      : 'Сервер ещё не выбран';
 
   return (
-    <div className={`profile-row ${p.current ? 'current' : ''}`}>
+    <div className="s-row profile-row" hidden={!visible}>
       <div className="profile-main">
-        <Avatar p={p} />
-        <div className="profile-text">
-          <div className="profile-name">
-            {p.name}
-            {p.current && <span className="tag">это окно</span>}
-          </div>
-          <div className="muted small">
-            {[p.serverName, p.exit ? `${flag(p.exit.country)} ${p.exit.ip}${p.exit.live ? '' : ' (в прошлый раз)'}` : undefined]
-              .filter(Boolean)
-              .join(' · ') || 'Сервер ещё не выбран'}
-          </div>
+        <ProfileBadge p={p} />
+        <div className="s-text">
+          <div className="s-desc">{where}</div>
         </div>
-        {!p.current &&
-          (p.open ? (
-            <button className="btn small" onClick={() => run(() => api.windows.open(p.id))}>
-              Перейти к окну
-            </button>
-          ) : (
-            <button className="btn small primary" onClick={() => run(() => api.windows.open(p.id))}>
-              Открыть окно
-            </button>
-          ))}
-        <button className="icon-btn" aria-label={`Изменить профиль «${p.name}»`} onClick={() => setEditing(!editing)}>
+        {p.current ? (
+          <span className="s-desc">Это окно</span>
+        ) : p.open ? (
+          <button className="btn small" onClick={() => run(() => api.windows.open(p.id))}>
+            Перейти к окну
+          </button>
+        ) : (
+          <button className="btn small primary" onClick={() => run(() => api.windows.open(p.id))}>
+            Открыть окно
+          </button>
+        )}
+        <button className="icon-btn" aria-label={`Изменить профиль «${p.name}»`} aria-expanded={editing} onClick={() => setEditing(!editing)}>
           <I.Edit size={14} />
         </button>
       </div>
       {editing && (
         <div className="profile-edit">
           <label className="field">
-            <span className="muted small">Название</span>
+            <span className="s-desc">Название</span>
             <input value={name} maxLength={40} onChange={(e) => setName(e.target.value)} />
           </label>
-          <Swatches label={`Цвет профиля ${p.id}`} colors={[p.color, ...state.freeColors]} value={color} onPick={setColor} />
+          <Swatches label={`Цвет окна «${p.name}»`} colors={[p.color, ...state.freeColors]} value={color} onPick={setColor} />
           <div className="row-actions">
             <button
               className="btn small primary"
@@ -218,80 +211,77 @@ function ProfileRow({ p, state, run }: { p: WindowProfileInfo; state: WindowProf
               </button>
             )}
           </div>
-          {p.open && !p.current && <p className="muted small">Чтобы удалить профиль, сначала закройте его окно.</p>}
+          {p.open && !p.current && <p className="s-desc">Чтобы удалить профиль, сначала закройте его окно.</p>}
         </div>
       )}
     </div>
   );
 }
 
-/** Ctrl/Cmd+N or the profile badge: the windows and their profiles. */
-export function ProfilesPanel(props: { state: WindowProfilesState; servers: ProfilesState; run: Run; onClose: () => void }) {
-  const { state, servers, run, onClose } = props;
+/** Settings › Windows and profiles (also Ctrl/Cmd+N and the badge in the tab strip). */
+export function ProfilesSection(props: { state: WindowProfilesState; servers: ProfilesState; run: Run }) {
+  const { state, servers, run } = props;
   const [name, setName] = useState('');
   const [color, setColor] = useState(state.freeColors[0] ?? '');
   const [serverId, setServerId] = useState(servers.selectedId ?? servers.profiles[0]?.id ?? '');
   useEffect(() => {
     if (!state.freeColors.includes(color)) setColor(state.freeColors[0] ?? '');
   }, [state.freeColors.join()]);
+  const newVisible = useMatch('Новый профиль', 'новое окно', 'создать');
 
   return (
-    <aside className="panel">
-      <header>
-        <h3>Окна и профили</h3>
-        <button className="icon-btn" onClick={onClose} aria-label="Закрыть">
-          <I.Close />
-        </button>
-      </header>
-      <div className="panel-body">
-        <p className="muted small">
-          У каждого профиля своё окно, свой сервер и IP, свои куки, входы, закладки и часовой пояс. Сайты не видят, что
-          это один человек.
+    <>
+      <Card title="Окна">
+        <p className="s-note">
+          У каждого профиля своё окно, свой сервер и IP, свои куки, входы, закладки и часовой пояс. Сайты не видят, что это
+          один человек.
         </p>
-        <section className="group">
-          {state.profiles.map((p) => (
-            <ProfileRow key={p.id} p={p} state={state} run={run} />
-          ))}
-        </section>
-
-        <section className="group new-profile">
-          <div className="group-title">Новый профиль</div>
+        {state.profiles.map((p) => (
+          <ProfileRow key={p.id} p={p} state={state} run={run} />
+        ))}
+      </Card>
+      <Card title="Новый профиль">
+        <div className="s-row new-profile" hidden={!newVisible}>
           {state.freeColors.length === 0 ? (
-            <p className="muted small">Все цвета заняты: чтобы окна не путались, у каждого профиля свой цвет.</p>
+            <p className="s-desc">Все цвета заняты: чтобы окна не путались, у каждого профиля свой цвет.</p>
           ) : (
             <>
-              <label className="field">
-                <span className="muted small">Название</span>
-                <input value={name} maxLength={40} placeholder="Например, Работа" onChange={(e) => setName(e.target.value)} />
-              </label>
-              <label className="field">
-                <span className="muted small">Сервер</span>
-                <select value={serverId} onChange={(e) => setServerId(e.target.value)}>
-                  {servers.profiles.map((s) => (
-                    <option key={s.id} value={s.id}>
-                      {s.name}
-                    </option>
-                  ))}
-                </select>
-              </label>
+              <div className="new-profile-fields">
+                <label className="field">
+                  <span className="s-desc">Название</span>
+                  <input value={name} maxLength={40} placeholder="Например, Работа" onChange={(e) => setName(e.target.value)} />
+                </label>
+                <label className="field">
+                  <span className="s-desc">Сервер</span>
+                  <select value={serverId} onChange={(e) => setServerId(e.target.value)}>
+                    {servers.profiles.map((s) => (
+                      <option key={s.id} value={s.id}>
+                        {s.name}
+                      </option>
+                    ))}
+                  </select>
+                </label>
+              </div>
               <Swatches label="Цвет окна" colors={state.freeColors} value={color} onPick={setColor} />
-              <button
-                className="btn primary wide"
-                disabled={!name.trim() || !color}
-                onClick={() =>
-                  run(async () => {
-                    await api.windows.create({ name, color, serverId: serverId || undefined });
-                    setName('');
-                  })
-                }
-              >
-                Создать и открыть окно
-              </button>
-              <p className="muted small">Цвета, которые уже у других профилей, не предлагаются: два окна одного цвета перепутать проще всего.</p>
+              <div className="new-profile-actions">
+                <span className="s-desc">Занятые цвета не предлагаются: два окна одного цвета перепутать проще всего.</span>
+                <button
+                  className="btn primary"
+                  disabled={!name.trim() || !color}
+                  onClick={() =>
+                    run(async () => {
+                      await api.windows.create({ name, color, serverId: serverId || undefined });
+                      setName('');
+                    })
+                  }
+                >
+                  Создать и открыть окно
+                </button>
+              </div>
             </>
           )}
-        </section>
-      </div>
-    </aside>
+        </div>
+      </Card>
+    </>
   );
 }

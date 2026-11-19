@@ -8,6 +8,7 @@ import { join } from 'node:path';
 import type { OpenMode, PanelName, ProfilesState, ServerProfile, TunnelState } from '../shared/types';
 import type { BrowserData } from './browserData';
 import type { ExitInfo } from './health';
+import { serverKey } from './links';
 import { identityFor, isNewExit } from './identity';
 import type { UaMetadata } from './pageGuard';
 import type { Store } from './store';
@@ -125,7 +126,10 @@ export class ProfileWindow {
       this.send('tunnel:changed', s);
       if (s.status === 'connected') {
         const server = ctx.store.profile(s.profileId);
-        ctx.browser.setLastExit(profileId, { ip: s.exit?.ip, country: s.exit?.country, serverLink: server?.link });
+        const key = server ? serverKey(server) : undefined;
+        ctx.browser.setLastExit(profileId, { ip: s.exit?.ip, country: s.exit?.country, serverKey: key });
+        // The provider may have renamed it: remember the name it has now.
+        if (server && key && key === this.profile.serverKey) ctx.browser.setServer(profileId, { key, name: server.name });
       }
       this.ctx.profilesChanged();
     });
@@ -188,29 +192,64 @@ export class ProfileWindow {
 
   // ---- servers: each window connects to its own
 
+  /** The server this profile uses, found by its connection settings; none is guessed. */
+  server(): ServerProfile | undefined {
+    const key = this.profile.serverKey;
+    return key ? this.ctx.store.state().profiles.find((s) => serverKey(s) === key) : undefined;
+  }
+
   selectedServerId(): string | undefined {
-    const { store } = this.ctx;
-    const link = this.profile.serverLink;
-    const servers = store.state().profiles;
-    return (link ? servers.find((s) => s.link === link)?.id : undefined) ?? (this.profileId === FIRST_PROFILE_ID ? store.selectedId : undefined) ?? servers[0]?.id;
+    return this.server()?.id;
   }
 
   serversState(): ProfilesState {
     return { ...this.ctx.store.state(), selectedId: this.selectedServerId() };
   }
 
-  selectServer(id: string) {
-    const server = this.ctx.store.profile(id);
-    if (!server) throw new Error('сервер не найден');
-    this.ctx.browser.setServerLink(this.profileId, server.link);
+  /**
+   * Makes `id` this profile's server. Another server usually means another IP for the sites
+   * this profile is known to, so replacing a server the profile already has is confirmed
+   * first; a connected window then reconnects through the new one. Resolves false when the
+   * user keeps the old server.
+   */
+  async selectServer(id: string): Promise<boolean> {
+    const next = this.ctx.store.profile(id);
+    if (!next) throw new Error('сервер не найден');
+    const current = this.server();
+    if (current && current.id === next.id) return true;
+    const st = this.tunnel.state.status;
+    const live = st === 'connected' || st === 'degraded' || st === 'connecting';
+    if (current) {
+      const r = await dialog.showMessageBox(this.win, {
+        type: 'question',
+        buttons: [live ? 'Сменить и переподключить' : 'Сменить сервер', 'Отмена'],
+        defaultId: 1,
+        cancelId: 1,
+        noLink: true,
+        message: `Сменить сервер профиля «${this.profile.name}»?`,
+        detail:
+          `Сейчас: ${current.name}\nНовый: ${next.name}\n\n` +
+          'У другого сервера, скорее всего, другой IP-адрес. Сайты, где вы вошли в этом профиле, могут связать новый ' +
+          'адрес со старым. Если адрес действительно сменится, при подключении приложение спросит, очистить ли данные сайтов.',
+      });
+      if (r.response !== 0) return false;
+    }
+    this.ctx.browser.setServer(this.profileId, { key: serverKey(next), name: next.name });
     this.send('profiles:changed', this.serversState());
     this.ctx.profilesChanged();
+    if (current && live) void this.tunnel.connect(next);
+    return true;
   }
 
-  connect(id?: string) {
-    const server = this.ctx.store.profile(id ?? this.selectedServerId());
-    if (!server) throw new Error('сначала добавьте сервер');
-    this.selectServer(server.id);
+  /** Connects through the profile's server, or through `id` once it is the profile's server. */
+  async connect(id?: string) {
+    if (id !== undefined && id !== this.selectedServerId()) {
+      if (!(await this.selectServer(id))) return;
+      // A connected window already reconnected in selectServer.
+      if (this.tunnel.state.status === 'connecting') return;
+    }
+    const server = this.server();
+    if (!server) throw new Error(this.profile.serverName ? 'сервера этого профиля больше нет: выберите другой' : 'выберите сервер');
     void this.tunnel.connect(server);
   }
 
@@ -228,7 +267,7 @@ export class ProfileWindow {
    */
   private async confirmNewExit(exit: ExitInfo, server: ServerProfile): Promise<boolean> {
     const p = this.profile;
-    if (!isNewExit(exit.ip, p.lastExitIp, !!p.lastServerLink && p.lastServerLink !== server.link)) return true;
+    if (!isNewExit(exit.ip, p.lastExitIp, !!p.lastServerKey && p.lastServerKey !== serverKey(server))) return true;
     if (!this.ctx.browser.settings().warnOnServerSwitch) return true;
     const cookies = await this.gate.ses.cookies.get({}).catch(() => []);
     if (!cookies.length) return true;
@@ -246,7 +285,7 @@ export class ProfileWindow {
         'и поймут, что это тот же человек.\n\n' +
         '«Очистить и подключить» удалит куки, входы и данные сайтов этого профиля, а открытые вкладки загрузятся ' +
         'заново. Сервер уже проверен, но окно закрыто для сайтов: пока вы не ответите, они ничего не получают.',
-      checkboxLabel: 'Больше не спрашивать (включить снова: ⋮ → Настройки)',
+      checkboxLabel: 'Больше не спрашивать (включить снова: ⋮ → Конфиденциальность и защита)',
     });
     if (r.response === 2) return false;
     if (r.checkboxChecked) this.ctx.browser.setSettings({ warnOnServerSwitch: false });
@@ -258,7 +297,13 @@ export class ProfileWindow {
 
   openBookmark(id: string, how: OpenMode) {
     const b = this.ctx.browser.bookmark(this.profileId, id);
-    if (b) this.tabs.open(b.url, how);
+    if (!b) return;
+    // From the settings tab: the page under it stays as it was, the site gets a tab of its own.
+    if (how === 'current' && this.tabs.settings === 'active') {
+      this.send('ui:settings-tab', 'close');
+      how = 'new-tab';
+    }
+    this.tabs.open(b.url, how);
   }
 
   /** Ctrl/Cmd+D: bookmark the page, or open the bookmark for editing if it already is one. */

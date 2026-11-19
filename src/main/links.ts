@@ -390,3 +390,34 @@ export function parseMany(body: string): ParsedBatch {
   }
   return { profiles, errors };
 }
+
+/**
+ * What makes a server the same server: everything that goes into the connection, not its
+ * name or the link's text. Providers put the traffic left or a date into the name, which
+ * changes the link on every subscription refresh; the key stays.
+ */
+export function serverKey(p: ServerProfile): string {
+  const { id: _id, name: _name, link: _link, subscriptionId: _sub, ...connection } = p;
+  const sorted = (v: unknown): unknown =>
+    Array.isArray(v)
+      ? v.map(sorted)
+      : v && typeof v === 'object'
+        ? Object.fromEntries(
+            Object.entries(v as Record<string, unknown>)
+              .filter(([, x]) => x !== undefined && x !== '')
+              .sort(([a], [b]) => (a < b ? -1 : 1))
+              .map(([k, x]) => [k, sorted(x)]),
+          )
+        : v;
+  return JSON.stringify(sorted(connection));
+}
+
+/** The key of a server given by its link (also one no longer in any subscription). */
+export function serverKeyOfLink(link: string): { key: string; name: string } | undefined {
+  try {
+    const p = parseLink(link);
+    return { key: serverKey(p), name: p.name };
+  } catch {
+    return undefined;
+  }
+}

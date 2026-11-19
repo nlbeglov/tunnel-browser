@@ -14,7 +14,7 @@ import { join } from 'node:path';
 import { pathToFileURL } from 'node:url';
 import type { BrowserSettings, ImportResult, OpenMode, Subscription, UiRect, WindowProfilesState } from '../shared/types';
 import { BrowserData } from './browserData';
-import { parseMany } from './links';
+import { parseMany, serverKey, serverKeyOfLink } from './links';
 import type { UaMetadata } from './pageGuard';
 import { ProfileWindow, type AppContext } from './profileWindow';
 import { Store } from './store';
@@ -76,7 +76,7 @@ async function main() {
   const store = new Store(onStorageError);
   await store.load();
   const browser = new BrowserData(onStorageError);
-  await browser.load((id) => store.profile(id ?? store.selectedId)?.link);
+  await browser.load((id) => store.profile(id ?? store.selectedId)?.link, serverKeyOfLink);
 
   // ---- windows: one per window profile
   const uiUrl = pathToFileURL(join(__dirname, '../renderer/index.html')).toString();
@@ -148,13 +148,15 @@ async function main() {
         const open = windows.find((x) => x.profileId === p.id);
         const st = open?.tunnel.state;
         const live = st && (st.status === 'connected' || st.status === 'degraded') ? st.exit : undefined;
+        const server = p.serverKey ? servers.find((s) => serverKey(s) === p.serverKey) : undefined;
         return {
           id: p.id,
           name: p.name,
           color: p.color,
           open: !!open,
           current: p.id === w.profileId,
-          serverName: (p.serverLink ? servers.find((s) => s.link === p.serverLink) : undefined)?.name,
+          serverName: server?.name ?? p.serverName,
+          serverMissing: !!p.serverKey && !server,
           exit: live
             ? { ip: live.ip, country: live.country, live: true }
             : p.lastExitIp
@@ -273,6 +275,7 @@ async function main() {
   handle('tunnel:get', (w) => w.tunnel.state);
   handle('tunnel:connect', (w, id: unknown) => w.connect(id === undefined ? undefined : str(id)));
   handle('tunnel:disconnect', (w) => w.tunnel.disconnect());
+  handle('tunnel:measure', (w) => w.tunnel.measureLatency());
 
   // ---- this window's tabs
   handle('tabs:get', (w) => w.tabs.state());
@@ -293,7 +296,7 @@ async function main() {
     if (!r || typeof r !== 'object') return;
     w.tabs.setBounds({ x: Number(r.x) || 0, y: Number(r.y) || 0, width: Number(r.width) || 0, height: Number(r.height) || 0 });
   });
-  on('tabs:overlay', (w, open: unknown) => w.tabs.setOverlay(open === true));
+  on('tabs:settings-tab', (w, state: unknown) => w.tabs.setSettingsTab(state === 'active' || state === 'open' ? state : 'closed'));
   on('ui:titlebar-colors', (w, c: unknown) => {
     const { color, symbolColor } = (c ?? {}) as { color?: unknown; symbolColor?: unknown };
     if (hex(color) && hex(symbolColor)) w.setTitleBarColors(String(color).trim(), String(symbolColor).trim());
@@ -335,7 +338,7 @@ async function main() {
   handle('windows:create', async (w, input: unknown) => {
     const i = (input ?? {}) as { name?: unknown; color?: unknown; serverId?: unknown };
     const server = typeof i.serverId === 'string' ? store.profile(i.serverId) : undefined;
-    const p = browser.createProfile({ name: i.name, color: i.color, serverLink: server?.link });
+    const p = browser.createProfile({ name: i.name, color: i.color, server: server ? { key: serverKey(server), name: server.name } : undefined });
     await openWindow(p.id, w.win);
   });
   handle('windows:update', (_w, id: unknown, patch: unknown) => {
@@ -501,11 +504,20 @@ function buildMenu(focused: () => ProfileWindow | undefined, hooks: MenuHooks) {
     const w = focused();
     if (w && !w.win.isDestroyed()) fn(w);
   };
+  /** A command for the page in front; none while the settings tab is the active one. */
   const activeTab = (fn: (w: ProfileWindow, id: number) => void) =>
     withWin((w) => {
       const id = w.tabs.state().activeId;
-      if (id !== null) fn(w, id);
+      if (id !== null && w.tabs.settings !== 'active') fn(w, id);
     });
+  // The settings tab lives in the UI: it closes itself and takes part in Ctrl+Tab there.
+  const closeTab = withWin((w) => {
+    const id = w.tabs.state().activeId;
+    if (w.tabs.settings === 'active') w.send('ui:settings-tab', 'close');
+    else if (id !== null) w.tabs.close(id);
+  });
+  const cycle = (step: 1 | -1) =>
+    withWin((w) => (w.tabs.settings === 'closed' ? w.tabs.cycle(step) : w.send('ui:settings-tab', step > 0 ? 'next' : 'prev')));
   const zoom = (delta: number | null) =>
     withWin((w) => {
       const wc = w.tabs.active;
@@ -519,7 +531,7 @@ function buildMenu(focused: () => ProfileWindow | undefined, hooks: MenuHooks) {
         { label: 'Новая вкладка', accelerator: 'CmdOrCtrl+T', click: withWin((w) => w.tabs.create()) },
         { label: 'Новое окно…', accelerator: 'CmdOrCtrl+N', click: hooks.newWindow },
         { label: 'Открыть закрытую вкладку', accelerator: 'CmdOrCtrl+Shift+T', click: withWin((w) => w.tabs.reopenClosed()) },
-        { label: 'Закрыть вкладку', accelerator: 'CmdOrCtrl+W', click: activeTab((w, id) => w.tabs.close(id)) },
+        { label: 'Закрыть вкладку', accelerator: 'CmdOrCtrl+W', click: closeTab },
         { label: 'Адресная строка', accelerator: 'CmdOrCtrl+L', click: withWin((w) => w.send('ui:focus-address')) },
         { type: 'separator' },
         { label: 'Закрыть окно', accelerator: 'CmdOrCtrl+Shift+W', click: withWin((w) => w.win.close()) },
@@ -545,8 +557,8 @@ function buildMenu(focused: () => ProfileWindow | undefined, hooks: MenuHooks) {
         { label: 'Перезагрузить (F5)', accelerator: 'F5', visible: false, click: activeTab((w, id) => w.tabs.reload(id)) },
         { label: 'Назад', accelerator: isMac ? 'Cmd+[' : 'Alt+Left', click: withWin((w) => w.tabs.active?.navigationHistory.goBack()) },
         { label: 'Вперёд', accelerator: isMac ? 'Cmd+]' : 'Alt+Right', click: withWin((w) => w.tabs.active?.navigationHistory.goForward()) },
-        { label: 'Следующая вкладка', accelerator: 'Ctrl+Tab', click: withWin((w) => w.tabs.cycle(1)) },
-        { label: 'Предыдущая вкладка', accelerator: 'Ctrl+Shift+Tab', click: withWin((w) => w.tabs.cycle(-1)) },
+        { label: 'Следующая вкладка', accelerator: 'Ctrl+Tab', click: cycle(1) },
+        { label: 'Предыдущая вкладка', accelerator: 'Ctrl+Shift+Tab', click: cycle(-1) },
         { type: 'separator' },
         { label: 'Увеличить', accelerator: 'CmdOrCtrl+=', click: zoom(0.5) },
         { label: 'Уменьшить', accelerator: 'CmdOrCtrl+-', click: zoom(-0.5) },

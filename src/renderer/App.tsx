@@ -1,23 +1,12 @@
 import { useCallback, useEffect, useLayoutEffect, useRef, useState, type FormEvent, type KeyboardEvent, type ReactNode } from 'react';
-import type {
-  BookmarksState,
-  BrowserSettings,
-  PanelName,
-  ProfilesState,
-  ReleaseEntry,
-  TabInfo,
-  TabsState,
-  TunnelState,
-  UpdateState,
-  WindowProfilesState,
-} from '../shared/types';
+import type { BookmarksState, ProfilesState, TabInfo, TabsState, TunnelState, UpdateState, WindowProfileInfo, WindowProfilesState } from '../shared/types';
 import { BookmarkStar, BookmarkTiles, BookmarksBar, BookmarksPanel } from './bookmarks';
 import { SiteIcon, api, errText, useBridge, type Run } from './bridge';
-import { flag, profileLine, usageLine } from './format';
+import { flag } from './format';
 import * as I from './icons';
-import { ProfileChip, ProfilesPanel, useProfileChrome } from './windows';
+import { Ping, SettingsView, type SettingsSection } from './settings';
+import { ProfileChip, useProfileChrome } from './windows';
 
-type Panel = null | PanelName;
 const isMac = api.app.platform === 'darwin';
 
 export function App() {
@@ -28,7 +17,11 @@ export function App() {
   const bookmarks = useBridge<BookmarksState>({ items: [], showBar: true }, api.bookmarks.get, api.bookmarks.onChange);
   const windows = useBridge<WindowProfilesState>({ profiles: [], freeColors: [], current: '' }, api.windows.get, api.windows.onChange);
   const me = windows.profiles.find((p) => p.current);
-  const [panel, setPanel] = useState<Panel>(null);
+  // Settings are a tab of their own in the strip (no page, no address). While it is the
+  // active tab, the page of the selected tab is hidden behind it, not unloaded.
+  const [settings, setSettings] = useState<{ section: SettingsSection; active: boolean } | null>(null);
+  const [lastSection, setLastSection] = useState<SettingsSection>('connection');
+  const [bookmarksOpen, setBookmarksOpen] = useState(false);
   const [editBookmark, setEditBookmark] = useState<string | undefined>();
   const [toast, setToast] = useState<string | null>(null);
   const [fullScreen, setFullScreen] = useState(false);
@@ -37,6 +30,43 @@ export function App() {
   const locked = tunnel.status !== 'connected';
   const active = tabs.tabs.find((t) => t.id === tabs.activeId) ?? null;
 
+  const openSettings = useCallback((s: SettingsSection) => {
+    setSettings({ section: s, active: true });
+    setLastSection(s);
+  }, []);
+  /** Another tab comes to the front; the settings tab stays in the strip. */
+  const leaveSettings = useCallback(() => setSettings((st) => (st?.active ? { ...st, active: false } : st)), []);
+  const closeSettings = useCallback(() => setSettings(null), []);
+  /** The ⋮ button, the pill, the profile badge: show that section, or go back to the page. */
+  const toggleSettings = (s?: SettingsSection) =>
+    settings?.active && (!s || settings.section === s) ? leaveSettings() : openSettings(s ?? settings?.section ?? lastSection);
+
+  const settingsTab = settings ? (settings.active ? 'active' : 'open') : 'closed';
+  useEffect(() => {
+    api.tabs.setSettingsTab(settingsTab);
+  }, [settingsTab]);
+  // Another tab, or a new one, came to the front.
+  useEffect(leaveSettings, [tabs.activeId]);
+  // Ctrl/Cmd+W and Ctrl+Tab from the menu, while the settings tab is open.
+  const latest = useRef({ tabs, settings });
+  latest.current = { tabs, settings };
+  useEffect(
+    () =>
+      api.tabs.onSettingsTabCommand((cmd) => {
+        if (cmd === 'close') return closeSettings();
+        const { tabs: t, settings: st } = latest.current;
+        if (!st) return;
+        const order: Array<number | 'settings'> = [...t.tabs.map((x) => x.id), 'settings'];
+        const at = order.indexOf(st.active ? 'settings' : (t.activeId ?? 'settings'));
+        const next = order[(at + (cmd === 'next' ? 1 : -1) + order.length) % order.length];
+        if (next === 'settings') setSettings({ ...st, active: true });
+        else {
+          leaveSettings();
+          void api.tabs.activate(next);
+        }
+      }),
+    [],
+  );
   useEffect(() => {
     if (!toast || toast.length > 120) return; // long messages (storage problems) stay until closed
     const t = setTimeout(() => setToast(null), 5000);
@@ -45,8 +75,10 @@ export function App() {
   useEffect(
     () =>
       api.app.onOpenPanel((p, id) => {
-        setPanel(p);
-        setEditBookmark(id);
+        if (p === 'bookmarks') {
+          setBookmarksOpen(true);
+          setEditBookmark(id);
+        } else openSettings(p === 'servers' ? 'connection' : p === 'profiles' ? 'profiles' : 'connection');
       }),
     [],
   );
@@ -61,20 +93,28 @@ export function App() {
       setToast(errText(e));
     }
   }, []);
-  const togglePanel = (p: PanelName) => {
-    setEditBookmark(undefined);
-    setPanel(panel === p ? null : p);
-  };
 
   return (
     <div className={`app ${isMac ? 'mac' : 'wco'} ${fullScreen ? 'fullscreen' : ''}`}>
-      <TabStrip tabs={tabs} onToast={setToast} chip={<ProfileChip me={me} tunnel={tunnel} onClick={() => togglePanel('profiles')} />} />
+      <TabStrip
+        tabs={tabs}
+        onToast={setToast}
+        onTab={leaveSettings}
+        settings={settings && { active: settings.active, onSelect: () => openSettings(settings.section), onClose: closeSettings }}
+        chip={<ProfileChip me={me} tunnel={tunnel} onClick={() => toggleSettings('profiles')} />}
+      />
       <Toolbar
-        tab={active}
+        tab={settings?.active ? null : active}
         locked={locked}
         tunnel={tunnel}
         bookmarks={bookmarks}
-        togglePanel={togglePanel}
+        settingsActive={!!settings?.active}
+        toggleSettings={toggleSettings}
+        toggleBookmarks={() => {
+          setEditBookmark(undefined);
+          setBookmarksOpen(!bookmarksOpen);
+        }}
+        onNavigate={closeSettings}
         run={run}
         updateReady={update.status === 'available'}
       />
@@ -100,11 +140,20 @@ export function App() {
         </div>
       )}
       <div className="body">
-        <Content tab={active} tunnel={tunnel} locked={locked} profiles={profiles} bookmarks={bookmarks} run={run} openServers={() => setPanel('servers')} />
-        {panel === 'servers' && <ServersPanel profiles={profiles} tunnel={tunnel} run={run} onClose={() => setPanel(null)} />}
-        {panel === 'bookmarks' && <BookmarksPanel bookmarks={bookmarks} editId={editBookmark} run={run} onClose={() => setPanel(null)} />}
-        {panel === 'settings' && <SettingsPanel update={update} run={run} onClose={() => setPanel(null)} />}
-        {panel === 'profiles' && <ProfilesPanel state={windows} servers={profiles} run={run} onClose={() => setPanel(null)} />}
+        <Content tab={active} tunnel={tunnel} locked={locked} me={me} profiles={profiles} bookmarks={bookmarks} run={run} openServers={() => openSettings('connection')}>
+          {settings?.active && (
+            <SettingsView
+              section={settings.section}
+              onSection={openSettings}
+              tunnel={tunnel}
+              servers={profiles}
+              windows={windows}
+              update={update}
+              run={run}
+            />
+          )}
+        </Content>
+        {bookmarksOpen && <BookmarksPanel bookmarks={bookmarks} editId={editBookmark} run={run} onClose={() => setBookmarksOpen(false)} />}
       </div>
     </div>
   );
@@ -114,10 +163,23 @@ export function App() {
 
 function Favicon({ tab }: { tab: TabInfo }) {
   if (tab.loading) return <span className="spinner" />;
+  if (!tab.url)
+    return (
+      <span className="tab-blank" aria-hidden="true">
+        <I.Shield size={14} />
+      </span>
+    );
   return <SiteIcon url={tab.url} icon={tab.icon} />;
 }
 
-function TabStrip({ tabs, onToast, chip }: { tabs: TabsState; onToast: (s: string) => void; chip: ReactNode }) {
+function TabStrip(props: {
+  tabs: TabsState;
+  onToast: (s: string) => void;
+  onTab: () => void;
+  settings: { active: boolean; onSelect: () => void; onClose: () => void } | null;
+  chip: ReactNode;
+}) {
+  const { tabs, onToast, onTab, settings, chip } = props;
   const [dragId, setDragId] = useState<number | null>(null);
   const [dropAt, setDropAt] = useState<number | null>(null);
   const drop = () => {
@@ -134,7 +196,7 @@ function TabStrip({ tabs, onToast, chip }: { tabs: TabsState; onToast: (s: strin
       {tabs.tabs.map((t, i) => (
         <div
           key={t.id}
-          className={`tab ${t.id === tabs.activeId ? 'active' : ''} ${dropAt === i ? 'drop-before' : ''} ${dropAt === i + 1 && i === tabs.tabs.length - 1 ? 'drop-after' : ''}`}
+          className={`tab ${t.id === tabs.activeId && !settings?.active ? 'active' : ''} ${dropAt === i ? 'drop-before' : ''} ${dropAt === i + 1 && i === tabs.tabs.length - 1 ? 'drop-after' : ''}`}
           draggable
           onDragStart={(e) => {
             setDragId(t.id);
@@ -158,7 +220,10 @@ function TabStrip({ tabs, onToast, chip }: { tabs: TabsState; onToast: (s: strin
             if (e.button === 1) {
               e.preventDefault();
               void api.tabs.close(t.id);
-            } else if (e.button === 0) void api.tabs.activate(t.id);
+            } else if (e.button === 0) {
+              onTab();
+              void api.tabs.activate(t.id);
+            }
           }}
           onContextMenu={(e) => {
             e.preventDefault();
@@ -178,6 +243,26 @@ function TabStrip({ tabs, onToast, chip }: { tabs: TabsState; onToast: (s: strin
           </button>
         </div>
       ))}
+      {settings && (
+        <div
+          className={`tab settings-tab ${settings.active ? 'active' : ''}`}
+          title="Настройки"
+          onMouseDown={(e) => {
+            if (e.button === 1) {
+              e.preventDefault();
+              settings.onClose();
+            } else if (e.button === 0) settings.onSelect();
+          }}
+        >
+          <span className="tab-blank" aria-hidden="true">
+            <I.Gear size={14} />
+          </span>
+          <span className="tab-title">Настройки</span>
+          <button className="icon-btn tab-close" aria-label="Закрыть настройки" onMouseDown={(e) => e.stopPropagation()} onClick={settings.onClose}>
+            <I.Close size={12} />
+          </button>
+        </div>
+      )}
       <button className="icon-btn new-tab" aria-label="Новая вкладка" title="Новая вкладка (Ctrl/⌘+T)" onClick={() => api.tabs.create().catch((e) => onToast(errText(e)))}>
         <I.Plus />
       </button>
@@ -212,11 +297,14 @@ function Toolbar(props: {
   locked: boolean;
   tunnel: TunnelState;
   bookmarks: BookmarksState;
-  togglePanel: (p: PanelName) => void;
+  settingsActive: boolean;
+  toggleSettings: (s?: SettingsSection) => void;
+  toggleBookmarks: () => void;
+  onNavigate: () => void;
   run: Run;
   updateReady: boolean;
 }) {
-  const { tab, locked, tunnel, bookmarks, togglePanel, run, updateReady } = props;
+  const { tab, locked, tunnel, bookmarks, settingsActive, toggleSettings, toggleBookmarks, onNavigate, run, updateReady } = props;
   const [value, setValue] = useState('');
   const [editing, setEditing] = useState(false);
   const input = useRef<HTMLInputElement>(null);
@@ -231,10 +319,14 @@ function Toolbar(props: {
 
   const submit = (e: FormEvent) => {
     e.preventDefault();
-    if (!tab || !value.trim()) return;
+    if (!value.trim()) return;
     setEditing(false);
     input.current?.blur();
-    void run(() => api.tabs.navigate(tab.id, value));
+    // From the settings tab the site opens in a tab of its own: the page under it stays.
+    if (settingsActive) {
+      onNavigate();
+      void run(() => api.tabs.create(value));
+    } else if (tab) void run(() => api.tabs.navigate(tab.id, value));
   };
   const onKey = (e: KeyboardEvent) => {
     if (e.key === 'Escape') {
@@ -263,7 +355,9 @@ function Toolbar(props: {
         </button>
       )}
       <form className={`address ${locked ? 'disabled' : ''}`} onSubmit={submit}>
-        <span className={`address-icon ${secure ? 'secure' : ''}`}>{locked || secure ? <I.Lock size={14} /> : <I.Search size={14} />}</span>
+        <span className={`address-icon ${secure ? 'secure' : ''}`}>
+          {settingsActive ? <I.Gear size={14} /> : locked || secure ? <I.Lock size={14} /> : <I.Search size={14} />}
+        </span>
         <input
           ref={input}
           value={locked ? '' : value}
@@ -280,11 +374,17 @@ function Toolbar(props: {
         />
         <BookmarkStar tab={tab} bookmarks={bookmarks} locked={locked} run={run} />
       </form>
-      <button className="icon-btn" onClick={() => togglePanel('bookmarks')} aria-label="Закладки" title="Закладки (Ctrl/⌘+Alt+B)">
+      <button className="icon-btn" onClick={toggleBookmarks} aria-label="Закладки" title="Закладки (Ctrl/⌘+Alt+B)">
         <I.Bookmarks />
       </button>
-      <StatusPill tunnel={tunnel} onClick={() => togglePanel('servers')} />
-      <button className={`icon-btn ${updateReady ? 'badge' : ''}`} onClick={() => togglePanel('settings')} aria-label="Настройки">
+      <StatusPill tunnel={tunnel} onClick={() => toggleSettings('connection')} />
+      <button
+        className={`icon-btn ${updateReady ? 'badge' : ''} ${settingsActive ? 'on' : ''}`}
+        onClick={() => toggleSettings()}
+        aria-label="Настройки"
+        aria-pressed={settingsActive}
+        title={updateReady ? 'Настройки · есть обновление' : 'Настройки'}
+      >
         <I.Menu />
       </button>
     </div>
@@ -332,12 +432,15 @@ function Content(props: {
   tab: TabInfo | null;
   tunnel: TunnelState;
   locked: boolean;
+  me: WindowProfileInfo | undefined;
   profiles: ProfilesState;
   bookmarks: BookmarksState;
   run: Run;
   openServers: () => void;
+  /** the settings page, when open: it takes the place of the page */
+  children?: ReactNode;
 }) {
-  const { tab, tunnel, locked, profiles, bookmarks, run, openServers } = props;
+  const { tab, tunnel, locked, me, profiles, bookmarks, run, openServers, children } = props;
   const ref = useRef<HTMLDivElement>(null);
 
   useLayoutEffect(() => {
@@ -357,8 +460,9 @@ function Content(props: {
     };
   }, []);
 
-  let inner = null;
-  if (locked) inner = <LockScreen tunnel={tunnel} profiles={profiles} run={run} openServers={openServers} />;
+  let inner: ReactNode = null;
+  if (children) inner = children;
+  else if (locked) inner = <LockScreen tunnel={tunnel} me={me} profiles={profiles} run={run} openServers={openServers} />;
   else if (tab && !tab.url) inner = <StartPage tab={tab} tunnel={tunnel} bookmarks={bookmarks} run={run} />;
   else if (tab?.error)
     inner = (
@@ -384,11 +488,12 @@ function Content(props: {
 
 function LockScreen(props: {
   tunnel: TunnelState;
+  me: WindowProfileInfo | undefined;
   profiles: ProfilesState;
   run: Run;
   openServers: () => void;
 }) {
-  const { tunnel, profiles, run, openServers } = props;
+  const { tunnel, me, profiles, run, openServers } = props;
   const selected = profiles.profiles.find((p) => p.id === profiles.selectedId);
   const connecting = tunnel.status === 'connecting';
   if (tunnel.status === 'degraded') {
@@ -415,42 +520,73 @@ function LockScreen(props: {
       </div>
     );
   }
-  return (
-    <div className="center">
-      <div className="card lock">
-        <div className={`lock-icon ${connecting ? 'pulse' : ''}`}>{connecting ? <I.Shield size={40} /> : <I.ShieldOff size={40} />}</div>
-        {connecting ? (
-          <>
-            <h2>Подключаемся к «{tunnel.profileName}»</h2>
-            <p>Проверяем, что трафик действительно идёт через сервер. Браузер откроется только после этого.</p>
-          </>
-        ) : (
-          <>
-            <h2>Браузер заблокирован</h2>
-            <p>Сайты открываются только через туннель. Пока он не подключён, у браузера нет доступа в интернет.</p>
-          </>
-        )}
-        {tunnel.status === 'error' && tunnel.message && <p className="error-text">{tunnel.message}</p>}
-        {!connecting &&
-          (selected ? (
-            <div className="lock-actions">
-              <button className="btn primary big" onClick={() => run(() => api.tunnel.connect(selected.id))}>
-                Подключить
-              </button>
-              <button className="btn ghost" onClick={openServers}>
-                {selected.name} · сменить
-              </button>
-            </div>
-          ) : (
-            <button className="btn primary big" onClick={openServers}>
-              Добавить сервер
-            </button>
-          ))}
-        {connecting && (
+  if (connecting) {
+    return (
+      <div className="center">
+        <div className="card lock">
+          <div className="lock-icon pulse">
+            <I.Shield size={40} />
+          </div>
+          <h2>Подключаемся к «{tunnel.profileName}»</h2>
+          <p>Проверяем, что трафик действительно идёт через сервер. Браузер откроется только после этого.</p>
           <button className="btn ghost" onClick={() => run(() => api.tunnel.disconnect())}>
             Отмена
           </button>
-        )}
+        </div>
+      </div>
+    );
+  }
+
+  // The profile keeps its server; another one is never picked for it silently.
+  let title = 'Браузер заблокирован';
+  let text: ReactNode = 'Сайты открываются только через туннель. Пока он не подключён, у браузера нет доступа в интернет.';
+  let actions: ReactNode;
+  if (selected) {
+    actions = (
+      <>
+        <p className="lock-server">
+          Сервер профиля{me ? ` «${me.name}»` : ''}: <b>{selected.name}</b>
+        </p>
+        <div className="lock-actions">
+          <button className="btn primary big" onClick={() => run(() => api.tunnel.connect(selected.id))}>
+            Подключить
+          </button>
+          <button className="btn ghost" onClick={openServers}>
+            Сменить сервер
+          </button>
+        </div>
+      </>
+    );
+  } else if (!profiles.profiles.length) {
+    actions = (
+      <button className="btn primary big" onClick={openServers}>
+        Добавить сервер
+      </button>
+    );
+  } else {
+    if (me?.serverMissing) {
+      title = `Сервера «${me.serverName}» больше нет`;
+      text = `Провайдер убрал его из подписки, или он был удалён. Выберите другой сервер для профиля «${me.name}»: приложение само его не поменяет.`;
+    } else {
+      title = 'Выберите сервер';
+      text = `Профиль${me ? ` «${me.name}»` : ''} ещё не подключался. Выберите, через какой сервер он будет работать; приложение запомнит выбор.`;
+    }
+    actions = (
+      <button className="btn primary big" onClick={openServers}>
+        Выбрать сервер
+      </button>
+    );
+  }
+  return (
+    <div className="center">
+      <div className="card lock">
+        <div className="lock-icon">
+          <I.ShieldOff size={40} />
+        </div>
+        <h2>{title}</h2>
+        <p>{text}</p>
+        {tunnel.status === 'error' && tunnel.message && <p className="error-text">{tunnel.message}</p>}
+        {actions}
       </div>
     </div>
   );
@@ -463,13 +599,21 @@ function StartPage({ tab, tunnel, bookmarks, run }: { tab: TabInfo; tunnel: Tunn
       <div className="start">
         <div className="start-badge">
           <I.Shield size={18} />
-          <span>
-            Защищено туннелем{tunnel.exit ? ` · ${flag(tunnel.exit.country)} ${tunnel.exit.ip} · ${tunnel.exit.latencyMs} мс` : ''}
-          </span>
+          <span>Защищено туннелем</span>
+          {tunnel.exit && (
+            <>
+              <span className="sep" aria-hidden="true" />
+              <span>
+                {flag(tunnel.exit.country)} {tunnel.exit.ip}
+              </span>
+              <span className="sep" aria-hidden="true" />
+              <Ping tunnel={tunnel} run={run} />
+            </>
+          )}
         </div>
         {tunnel.exit?.timezone && (
           <div className="start-note muted small" title="Так сайты не отличат вас от жителя страны сервера по часам и языку">
-            Для сайтов: часовой пояс {tunnel.exit.timezone} · язык English (US)
+            Для сайтов: часовой пояс {tunnel.exit.timezone}, язык English (US)
           </div>
         )}
         <form
@@ -485,291 +629,5 @@ function StartPage({ tab, tunnel, bookmarks, run }: { tab: TabInfo; tunnel: Tunn
         <BookmarkTiles bookmarks={bookmarks} run={run} />
       </div>
     </div>
-  );
-}
-
-// ---------------------------------------------------------------- servers
-
-function ServersPanel(props: {
-  profiles: ProfilesState;
-  tunnel: TunnelState;
-  run: Run;
-  onClose: () => void;
-}) {
-  const { profiles, tunnel, run, onClose } = props;
-  const [text, setText] = useState('');
-  const [busy, setBusy] = useState(false);
-  const [result, setResult] = useState<string | null>(null);
-  const isUp = tunnel.status === 'connected' || tunnel.status === 'degraded';
-
-  const add = async () => {
-    const t = text.trim();
-    if (!t) return;
-    setBusy(true);
-    setResult(null);
-    try {
-      const r = /^https?:\/\//i.test(t) && !t.includes('\n') ? await api.profiles.addSubscription(t) : await api.profiles.importText(t);
-      setText('');
-      const errs = r.errors.length ? `\nНе добавлено: ${r.errors.length}\n${r.errors.slice(0, 5).join('\n')}` : '';
-      setResult(`Добавлено серверов: ${r.added}${errs}`);
-    } catch (e) {
-      setResult(errText(e));
-    } finally {
-      setBusy(false);
-    }
-  };
-
-  const groups: Array<{ id: string | null; title: string }> = [
-    { id: null, title: 'Мои серверы' },
-    ...profiles.subscriptions.map((s) => ({ id: s.id, title: s.title })),
-  ];
-
-  return (
-    <aside className="panel">
-      <header>
-        <h3>Серверы</h3>
-        <button className="icon-btn" onClick={onClose} aria-label="Закрыть">
-          <I.Close />
-        </button>
-      </header>
-      <div className="panel-body">
-        <div className="add-box">
-          <textarea
-            value={text}
-            onChange={(e) => setText(e.target.value)}
-            placeholder="Вставьте ссылку vless://, vmess://, trojan://, ss:// или ссылку на подписку https://…"
-            rows={3}
-            spellCheck={false}
-          />
-          <button className="btn primary" disabled={busy || !text.trim()} onClick={add}>
-            {busy ? 'Загружаем…' : 'Добавить'}
-          </button>
-          {result && <pre className="result">{result}</pre>}
-        </div>
-
-        {groups.map((g) => {
-          const list = profiles.profiles.filter((p) => (p.subscriptionId ?? null) === g.id);
-          const sub = g.id ? profiles.subscriptions.find((s) => s.id === g.id) : undefined;
-          if (!sub && !list.length) return null;
-          return (
-            <section key={g.id ?? 'own'} className="group">
-              <div className="group-head">
-                <div>
-                  <div className="group-title">{g.title}</div>
-                  {sub && <div className="muted small">{usageLine(sub)}</div>}
-                  {sub?.lastError && <div className="error-text small">{sub.lastError}</div>}
-                </div>
-                {sub && (
-                  <div className="row-actions">
-                    <button className="icon-btn" title="Обновить подписку" onClick={() => run(() => api.profiles.refreshSubscription(sub.id))}>
-                      <I.Reload size={14} />
-                    </button>
-                    <button className="icon-btn" title="Удалить подписку" onClick={() => run(() => api.profiles.removeSubscription(sub.id))}>
-                      <I.Trash size={14} />
-                    </button>
-                  </div>
-                )}
-              </div>
-              {list.map((p) => {
-                const current = tunnel.profileId === p.id && tunnel.status !== 'disconnected';
-                return (
-                  <div
-                    key={p.id}
-                    className={`server ${p.id === profiles.selectedId ? 'selected' : ''}`}
-                    onClick={() => run(() => api.profiles.select(p.id))}
-                    onDoubleClick={() => run(() => api.tunnel.connect(p.id))}
-                  >
-                    <span className={`dot ${current ? tunnel.status : ''}`} />
-                    <div className="server-text">
-                      <div className="server-name">{p.name}</div>
-                      <div className="muted small">{profileLine(p)}</div>
-                    </div>
-                    {!p.subscriptionId && (
-                      <button
-                        className="icon-btn row-del"
-                        title="Удалить"
-                        onClick={(e) => {
-                          e.stopPropagation();
-                          void run(() => api.profiles.remove(p.id));
-                        }}
-                      >
-                        <I.Trash size={14} />
-                      </button>
-                    )}
-                  </div>
-                );
-              })}
-            </section>
-          );
-        })}
-        {!profiles.profiles.length && <p className="muted">Серверов пока нет. Вставьте ссылку от вашего VPN-провайдера.</p>}
-      </div>
-      <footer>
-        {isUp || tunnel.status === 'connecting' ? (
-          <button className="btn danger wide" onClick={() => run(() => api.tunnel.disconnect())}>
-            Отключить
-          </button>
-        ) : (
-          <button className="btn primary wide" disabled={!profiles.selectedId} onClick={() => run(() => api.tunnel.connect(profiles.selectedId))}>
-            Подключить
-          </button>
-        )}
-        {isUp && tunnel.profileId !== profiles.selectedId && profiles.selectedId && (
-          <button className="btn wide" onClick={() => run(() => api.tunnel.connect(profiles.selectedId))}>
-            Переключиться на выбранный
-          </button>
-        )}
-      </footer>
-    </aside>
-  );
-}
-
-// ---------------------------------------------------------------- settings
-
-function SettingsPanel({ update, run, onClose }: { update: UpdateState; run: Run; onClose: () => void }) {
-  const [info, setInfo] = useState<{ version: string; platform: string; xrayVersion: string; repo: string } | null>(null);
-  const [history, setHistory] = useState<ReleaseEntry[] | null>(null);
-  const [historyError, setHistoryError] = useState<string | null>(null);
-  const [cleared, setCleared] = useState(false);
-  const [settings, setSettings] = useState<BrowserSettings | null>(null);
-
-  useEffect(() => {
-    void api.app.settings().then(setSettings);
-    void api.app.info().then(setInfo);
-    api.updates
-      .history()
-      .then(setHistory)
-      .catch((e) => setHistoryError(errText(e)));
-  }, []);
-
-  const statusText: Record<UpdateState['status'], string> = {
-    idle: 'Ещё не проверяли',
-    checking: 'Проверяем…',
-    available: `Доступна версия ${update.version}`,
-    'not-available': 'У вас последняя версия',
-    downloading: `Скачиваем… ${update.percent ?? 0}%`,
-    installing: 'Устанавливаем…',
-    error: update.message ?? 'Ошибка',
-    disabled: update.message ?? 'Недоступно',
-  };
-
-  return (
-    <aside className="panel">
-      <header>
-        <h3>Настройки</h3>
-        <button className="icon-btn" onClick={onClose} aria-label="Закрыть">
-          <I.Close />
-        </button>
-      </header>
-      <div className="panel-body">
-        <section className="group">
-          <div className="group-title">Обновления</div>
-          <p>
-            Версия <b>{info?.version ?? update.currentVersion}</b> · ядро Xray {info?.xrayVersion ?? '…'}
-          </p>
-          <p className="muted small">{statusText[update.status]}</p>
-          <div className="row-actions">
-            {update.status === 'available' || (update.status === 'error' && update.version) ? (
-              <button className="btn primary" onClick={() => run(() => api.updates.install())}>
-                Обновить до {update.version}
-              </button>
-            ) : (
-              <button className="btn" disabled={update.status === 'disabled' || update.status === 'checking'} onClick={() => run(() => api.updates.check())}>
-                Проверить обновления
-              </button>
-            )}
-          </div>
-        </section>
-
-        <section className="group">
-          <div className="group-title">История версий</div>
-          {historyError && <p className="error-text small">{historyError}</p>}
-          {!info?.repo && <p className="muted small">Репозиторий GitHub не задан в этой сборке.</p>}
-          {history?.length === 0 && info?.repo && <p className="muted small">Релизов пока нет.</p>}
-          {history?.map((r) => (
-            <details key={r.version} className="release">
-              <summary>
-                <b>{r.version}</b>
-                <span className="muted small">{r.date ? new Date(r.date).toLocaleDateString('ru-RU') : ''}</span>
-                {r.version === info?.version && <span className="tag">текущая</span>}
-              </summary>
-              <pre className="notes">{r.notes || 'Без описания'}</pre>
-            </details>
-          ))}
-        </section>
-
-        <section className="group">
-          <div className="group-title">Браузер</div>
-          {settings && (
-            <>
-              <label className="toggle">
-                <input
-                  type="checkbox"
-                  checked={settings.restoreTabs}
-                  onChange={(e) => run(async () => setSettings(await api.app.setSettings({ restoreTabs: e.target.checked })))}
-                />
-                <span>
-                  Восстанавливать вкладки при запуске
-                  <span className="muted small">Страницы загрузятся, когда подключится туннель.</span>
-                </span>
-              </label>
-              <label className="toggle">
-                <input
-                  type="checkbox"
-                  checked={settings.showBookmarksBar}
-                  onChange={(e) => run(async () => setSettings(await api.app.setSettings({ showBookmarksBar: e.target.checked })))}
-                />
-                <span>Показывать панель закладок (Ctrl/⌘+Shift+B)</span>
-              </label>
-              <label className="toggle">
-                <input
-                  type="checkbox"
-                  checked={settings.warnOnServerSwitch}
-                  onChange={(e) => run(async () => setSettings(await api.app.setSettings({ warnOnServerSwitch: e.target.checked })))}
-                />
-                <span>
-                  Спрашивать про куки, если сменился IP
-                  <span className="muted small">Сайты, где вы вошли, могут связать новый IP со старым по куки.</span>
-                </span>
-              </label>
-            </>
-          )}
-        </section>
-
-        <section className="group">
-          <div className="group-title">Данные сайтов этого профиля</div>
-          <p className="muted small">Куки, кэш и сохранённые входы на сайты в этом окне. Другие профили и серверы не затрагиваются.</p>
-          <button
-            className="btn"
-            onClick={() =>
-              run(async () => {
-                await api.app.clearBrowsingData();
-                setCleared(true);
-              })
-            }
-          >
-            {cleared ? 'Очищено' : 'Очистить данные сайтов'}
-          </button>
-        </section>
-
-        <section className="group">
-          <div className="group-title">Как работает защита</div>
-          <ul className="muted small explain">
-            <li>Единственный сетевой маршрут браузера — локальный вход Xray с одноразовым паролем. Прямого выхода в интернет нет.</li>
-            <li>Каждый запрос проверяется: пока туннель не подтверждён настоящим запросом через сервер, всё блокируется.</li>
-            <li>Если ядро падает или вы отключаетесь, браузер блокируется до любых других действий.</li>
-            <li>WebRTC не может слать UDP мимо туннеля; геолокация, камера, микрофон и устройства запрещены.</li>
-            <li>Локальная сеть и этот компьютер (localhost, 192.168.x.x и т. п.) из браузера недоступны.</li>
-            <li>Имена сайтов разрешает VPN-сервер: браузер не делает DNS-запросов через вашего провайдера.</li>
-            <li>
-              Сайты видят часовой пояс страны сервера и английский язык, а не настройки этого компьютера. Страница, для
-              которой это не включилось, не может ничего отправить.
-            </li>
-          </ul>
-        </section>
-        {info && <p className="muted small">{info.platform}{info.repo ? ` · github.com/${info.repo}` : ''}</p>}
-        <p className="muted small">Ядро Xray — MPL-2.0. Флаги стран — Twemoji, CC-BY 4.0.</p>
-      </div>
-    </aside>
   );
 }

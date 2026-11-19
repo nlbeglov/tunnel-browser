@@ -134,6 +134,14 @@ export interface BrowserSettings {
 export type OpenMode = 'current' | 'new-tab' | 'background';
 export type PanelName = 'servers' | 'settings' | 'bookmarks' | 'profiles';
 
+/**
+ * The settings tab: drawn by the UI in the tab strip, it has no page and no address. While it
+ * is the active one, the page view of the selected tab is hidden.
+ */
+export type SettingsTabState = 'closed' | 'open' | 'active';
+/** What the menu's tab commands ask of the settings tab when it is open. */
+export type SettingsTabCommand = 'close' | 'next' | 'prev';
+
 /** A window profile as the UI sees it (windowProfiles.ts). */
 export interface WindowProfileInfo {
   id: string;
@@ -144,6 +152,8 @@ export interface WindowProfileInfo {
   /** the profile of the window asking */
   current: boolean;
   serverName?: string;
+  /** the profile's server is no longer in any subscription (or was removed) */
+  serverMissing?: boolean;
   /** the live exit when its window is connected, else the last one sites saw */
   exit?: { ip: string; country?: string; live: boolean };
 }
@@ -217,6 +227,8 @@ export interface BridgeApi {
     get(): Promise<TunnelState>;
     connect(profileId?: string): Promise<void>;
     disconnect(): Promise<void>;
+    /** the ping again; resolves with it (undefined when not connected) */
+    measure(): Promise<number | undefined>;
     onChange(cb: (state: TunnelState) => void): () => void;
   };
   tabs: {
@@ -233,9 +245,10 @@ export interface BridgeApi {
     contextMenu(id: number): Promise<void>;
     reopenClosed(): Promise<void>;
     setBounds(rect: UiRect): void;
-    setOverlay(open: boolean): void;
+    setSettingsTab(state: SettingsTabState): void;
     onChange(cb: (state: TabsState) => void): () => void;
     onFocusAddressBar(cb: () => void): () => void;
+    onSettingsTabCommand(cb: (cmd: SettingsTabCommand) => void): () => void;
   };
   bookmarks: {
     get(): Promise<BookmarksState>;
@@ -270,6 +283,7 @@ export interface BridgeApi {
     clearBrowsingData(): Promise<void>;
     settings(): Promise<BrowserSettings>;
     setSettings(patch: Partial<BrowserSettings>): Promise<BrowserSettings>;
+    onSettingsChange(cb: (s: BrowserSettings) => void): () => void;
     onOpenPanel(cb: (panel: PanelName, bookmarkId?: string) => void): () => void;
     onFullScreen(cb: (full: boolean) => void): () => void;
     /** Windows: colours for the window buttons drawn over the tab strip */

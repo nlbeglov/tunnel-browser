@@ -13,7 +13,14 @@ export interface ProxyEndpoint {
 interface HttpsResult {
   status: number;
   body: string;
+  /** the whole request: CONNECT, the server's handshake, TLS, response, close */
   ms: number;
+  /**
+   * Round trip through the tunnel: from sending the request over the established connection
+   * to the first byte of the answer. This is the "ping" (you -> VPN server -> site -> back);
+   * the setup of a fresh connection is not in it.
+   */
+  rtt: number;
 }
 
 /**
@@ -62,10 +69,14 @@ export function getViaProxy(proxy: ProxyEndpoint, host: string, path: string, ti
       s.on('error', fail);
       const chunks: Buffer[] = [];
       let size = 0;
+      let sentAt = 0;
+      let firstByteAt = 0;
       s.once('secureConnect', () => {
+        sentAt = performance.now();
         s.write(`GET ${path} HTTP/1.1\r\nHost: ${host}\r\nUser-Agent: Mozilla/5.0\r\nAccept: */*\r\nConnection: close\r\n\r\n`);
       });
       s.on('data', (c: Buffer) => {
+        if (!firstByteAt) firstByteAt = performance.now();
         chunks.push(c);
         size += c.length;
         if (size > 64 * 1024) fail(new Error('слишком большой ответ'));
@@ -75,7 +86,12 @@ export function getViaProxy(proxy: ProxyEndpoint, host: string, path: string, ti
         const m = /^HTTP\/1\.[01] (\d{3})/.exec(raw);
         if (!m) return fail(new Error('пустой ответ'));
         const bodyAt = raw.indexOf('\r\n\r\n');
-        const result = { status: Number(m[1]), body: bodyAt >= 0 ? raw.slice(bodyAt + 4) : '', ms: Date.now() - started };
+        const result = {
+          status: Number(m[1]),
+          body: bodyAt >= 0 ? raw.slice(bodyAt + 4) : '',
+          ms: Date.now() - started,
+          rtt: Math.max(1, Math.round(firstByteAt - sentAt)),
+        };
         settle(() => resolve(result));
       });
     });
@@ -97,8 +113,9 @@ const PROBES: Array<[string, string]> = [
 ];
 
 /**
- * All probes run at once; resolves with the first 204 through the tunnel, rejects with the
- * last error once every probe has failed. A dead server is reported within one timeout.
+ * All probes run at once; resolves with the round trip (rtt) of the first 204 through the
+ * tunnel, rejects with the last error once every probe has failed. A dead server is reported
+ * within one timeout.
  */
 export function probeTunnel(proxy: ProxyEndpoint, timeoutMs = 8000): Promise<number> {
   return new Promise((resolve, reject) => {
@@ -110,24 +127,48 @@ export function probeTunnel(proxy: ProxyEndpoint, timeoutMs = 8000): Promise<num
     };
     for (const [host, path] of PROBES) {
       getViaProxy(proxy, host, path, timeoutMs).then(
-        (r) => (r.status === 204 ? resolve(r.ms) : failed(new Error(`${host} ответил ${r.status}`))),
+        (r) => (r.status === 204 ? resolve(r.rtt) : failed(new Error(`${host} ответил ${r.status}`))),
         failed,
       );
     }
   });
 }
 
-/** Learns the public exit IP and country as seen by the internet. */
+/**
+ * The tunnel's ping: several round trips, one after another, the best one counts (a single
+ * one can catch a hiccup). Each goes over its own fresh connection, whose setup is not timed.
+ */
+export async function measureLatency(proxy: ProxyEndpoint, rounds = 3, timeoutMs = 5000): Promise<number> {
+  const times: number[] = [];
+  let last: unknown;
+  for (let i = 0; i < rounds; i++) {
+    for (const [host, path] of PROBES) {
+      try {
+        const r = await getViaProxy(proxy, host, path, timeoutMs);
+        if (r.status !== 204) throw new Error(`${host} ответил ${r.status}`);
+        times.push(r.rtt);
+        break;
+      } catch (e) {
+        last = e;
+      }
+    }
+  }
+  if (!times.length) throw last instanceof Error ? last : new Error('туннель не отвечает');
+  return Math.min(...times);
+}
+
+/** Learns the public exit IP and country as seen by the internet, and the ping. */
 export async function exitInfo(proxy: ProxyEndpoint): Promise<ExitInfo> {
-  const latencyMs = await probeTunnel(proxy);
+  const first = await probeTunnel(proxy);
   try {
     const r = await getViaProxy(proxy, 'www.cloudflare.com', '/cdn-cgi/trace');
     // Body may be chunked; the key=value lines survive either way.
     const ip = /^ip=(.+)$/m.exec(r.body)?.[1]?.trim();
     const loc = /^loc=(.+)$/m.exec(r.body)?.[1]?.trim();
     const colo = /^colo=(.+)$/m.exec(r.body)?.[1]?.trim();
-    return { ip: ip ?? '?', country: loc, colo, latencyMs };
+    // Two round trips are better than one: the very first through a fresh core can be slow.
+    return { ip: ip ?? '?', country: loc, colo, latencyMs: Math.min(first, r.rtt) };
   } catch {
-    return { ip: '?', latencyMs };
+    return { ip: '?', latencyMs: first };
   }
 }
