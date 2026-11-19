@@ -1,7 +1,7 @@
 {
   "name": "tunnel-browser",
   "productName": "Tunnel Browser",
-  "version": "0.5.0",
+  "version": "0.5.1",
   "description": "Браузер, который выходит в интернет только через Xray-туннель",
   "main": "out/main/index.js",
   "private": true,
