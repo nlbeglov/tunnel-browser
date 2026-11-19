@@ -5,7 +5,7 @@
 
 import { BrowserWindow, Menu, WebContentsView, clipboard, nativeImage, type Rectangle, type Session, type WebContents } from 'electron';
 import { EventEmitter } from 'node:events';
-import type { OpenMode, TabInfo, TabsState } from '../shared/types';
+import type { OpenMode, SettingsTabState, TabInfo, TabsState } from '../shared/types';
 import { MAX_ICON_BYTES, MAX_RAW_ICON_BYTES, fetchableIconUrl, iconType } from './favicon';
 import { isWebUrl } from './guard';
 import type { PageGuard } from './pageGuard';
@@ -40,7 +40,8 @@ export class Tabs extends EventEmitter<{ change: [TabsState]; icon: [pageUrl: st
   private activeId: number | null = null;
   private nextId = 1;
   private bounds: Rectangle = { x: 0, y: 0, width: 0, height: 0 };
-  private overlay = false;
+  /** the UI's settings tab (no page of its own); 'active' hides the page view */
+  private settingsTab: SettingsTabState = 'closed';
   private locked = true;
   private attached: WebContentsView | null = null;
   private readonly popups = new Set<BrowserWindow>();
@@ -146,12 +147,15 @@ export class Tabs extends EventEmitter<{ change: [TabsState]; icon: [pageUrl: st
     }, 30);
   }
 
+  /** The page in front, if any: none while the settings tab is the active one. */
   get active(): WebContents | null {
+    if (this.settingsTab === 'active') return null;
     return this.activeId === null ? null : (this.tabs.get(this.activeId)?.view.webContents ?? null);
   }
 
   /** URL and title of the active tab, if it shows a web page. */
   activeEntry(): TabEntry | null {
+    if (this.settingsTab === 'active') return null;
     const t = this.activeId === null ? undefined : this.tabs.get(this.activeId);
     return t ? this.entry(t) : null;
   }
@@ -511,8 +515,12 @@ export class Tabs extends EventEmitter<{ change: [TabsState]; icon: [pageUrl: st
     this.layout();
   }
 
-  setOverlay(open: boolean) {
-    this.overlay = open;
+  get settings(): SettingsTabState {
+    return this.settingsTab;
+  }
+
+  setSettingsTab(state: SettingsTabState) {
+    this.settingsTab = state;
     this.layout();
   }
 
@@ -541,7 +549,7 @@ export class Tabs extends EventEmitter<{ change: [TabsState]; icon: [pageUrl: st
     if (this.win.isDestroyed()) return;
     const tab = this.activeId === null ? undefined : this.tabs.get(this.activeId);
     const visible =
-      !this.locked && !this.overlay && tab && tab.started && !tab.pending && !tab.error && this.bounds.width > 0;
+      !this.locked && this.settingsTab !== 'active' && tab && tab.started && !tab.pending && !tab.error && this.bounds.width > 0;
     const want = visible ? tab.view : null;
     if (this.attached && this.attached !== want) {
       this.win.contentView.removeChildView(this.attached);

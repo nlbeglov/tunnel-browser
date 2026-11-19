@@ -152,6 +152,16 @@ describe.skipIf(!hasCore)('tunnel state when the server goes away', () => {
     expect(t.state.exit?.ip).toBe('198.51.100.7');
   });
 
+  it('the ping button measures again and updates the state; nothing to measure when disconnected', async () => {
+    const { t } = await connected({ probeOk: () => true, measure: async () => 37 });
+    expect(t.state.exit?.latencyMs).toBe(10);
+    expect(await t.measureLatency()).toBe(37);
+    expect(t.state.exit?.latencyMs).toBe(37);
+    expect(t.state.exit?.ip).toBe('198.51.100.7');
+    await t.disconnect();
+    expect(await t.measureLatency()).toBeUndefined();
+  });
+
   it('a quiet page: the regular check finds the dead server too', async () => {
     let up = true;
     const { t } = await connected({ checkEveryMs: 50, probeOk: () => up });

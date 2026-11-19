@@ -24,6 +24,7 @@ const api: BridgeApi = {
     get: () => call('tunnel:get'),
     connect: (id) => call('tunnel:connect', id),
     disconnect: () => call('tunnel:disconnect'),
+    measure: () => call('tunnel:measure'),
     onChange: (cb) => listen('tunnel:changed', cb),
   },
   tabs: {
@@ -40,9 +41,10 @@ const api: BridgeApi = {
     contextMenu: (id) => call('tabs:context-menu', id),
     reopenClosed: () => call('tabs:reopen-closed'),
     setBounds: (rect) => ipcRenderer.send('tabs:bounds', rect),
-    setOverlay: (open) => ipcRenderer.send('tabs:overlay', open),
+    setSettingsTab: (state) => ipcRenderer.send('tabs:settings-tab', state),
     onChange: (cb) => listen('tabs:changed', cb),
     onFocusAddressBar: (cb) => listen('ui:focus-address', cb),
+    onSettingsTabCommand: (cb) => listen('ui:settings-tab', cb),
   },
   bookmarks: {
     get: () => call('bookmarks:get'),
@@ -76,6 +78,7 @@ const api: BridgeApi = {
     clearBrowsingData: () => call('app:clear-data'),
     settings: () => call('app:settings'),
     setSettings: (patch) => call('app:set-settings', patch),
+    onSettingsChange: (cb) => listen('settings:changed', cb),
     onOpenPanel: (cb) => {
       const fn = (_e: IpcRendererEvent, panel: PanelName, bookmarkId?: string) => cb(panel, bookmarkId);
       ipcRenderer.on('ui:open-panel', fn);

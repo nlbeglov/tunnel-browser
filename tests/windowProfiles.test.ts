@@ -3,6 +3,7 @@
 
 import { describe, expect, it } from 'vitest';
 import { fetchableIconUrl, iconType } from '../src/main/favicon';
+import { parseLink, serverKey, serverKeyOfLink } from '../src/main/links';
 import {
   FIRST_PARTITION,
   FIRST_PROFILE_ID,
@@ -12,7 +13,9 @@ import {
   isProfileColor,
   migrate,
   newPartition,
+  upgradeServerKeys,
 } from '../src/main/windowProfiles';
+import { LINKS, UUID } from './fixtures';
 
 describe('migration from one window to profiles', () => {
   const v1 = {
@@ -54,6 +57,42 @@ describe('migration from one window to profiles', () => {
     const once = migrate(v1, (id) => links[id ?? 'selected']);
     once.profiles.push({ ...once.profiles[0], id: 'x', name: 'Работа', color: PROFILE_COLORS[1], partition: newPartition('x') });
     expect(migrate(JSON.parse(JSON.stringify(once)), () => 'unused')).toEqual(once);
+  });
+});
+
+describe("a profile's server", () => {
+  // What providers do on every refresh: the name carries the traffic left.
+  const before = `${LINKS.vlessReality.split('#')[0]}#${encodeURIComponent('🇳🇱 NL | 120 GB left')}`;
+  const after = `${LINKS.vlessReality.split('#')[0]}#${encodeURIComponent('🇳🇱 NL | 119.5 GB left')}`;
+
+  it('is the same server when only its name changed', () => {
+    expect(serverKey(parseLink(before))).toBe(serverKey(parseLink(after)));
+    // ids are random per parse, links differ: neither can identify it
+    expect(parseLink(before).link).not.toBe(parseLink(after).link);
+  });
+
+  it('is another server when anything of the connection changed', () => {
+    const otherUser = before.replace(UUID, 'aaaaaaaa-7350-4ed6-829b-d32f7fb9a2b6');
+    const otherPort = before.replace(':443?', ':8443?');
+    for (const l of [otherUser, otherPort, LINKS.trojan]) expect(serverKey(parseLink(l))).not.toBe(serverKey(parseLink(before)));
+  });
+
+  it('0.4.0 profiles kept the server by link: they get its key, even if it was renamed since', () => {
+    const d = migrate(undefined, () => undefined);
+    d.profiles[0].serverLink = before;
+    d.profiles[0].lastServerLink = before;
+    upgradeServerKeys(d, serverKeyOfLink);
+    expect(d.profiles[0].serverKey).toBe(serverKey(parseLink(after)));
+    expect(d.profiles[0].serverName).toBe('🇳🇱 NL | 120 GB left');
+    expect(d.profiles[0].lastServerKey).toBe(d.profiles[0].serverKey);
+    expect(d.profiles[0].serverLink).toBeUndefined();
+  });
+
+  it('a link that cannot be read leaves the profile without a server, not with a guessed one', () => {
+    const d = migrate(undefined, () => undefined);
+    d.profiles[0].serverLink = 'garbage';
+    upgradeServerKeys(d, serverKeyOfLink);
+    expect(d.profiles[0].serverKey).toBeUndefined();
   });
 });
 

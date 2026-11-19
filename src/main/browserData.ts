@@ -18,6 +18,7 @@ import {
   isProfileColor,
   migrate,
   newPartition,
+  upgradeServerKeys,
   type BrowserDataV2,
   type ProfileRecord,
   type SessionTab,
@@ -41,11 +42,18 @@ export class BrowserData extends EventEmitter<{
     this.file = new EncryptedJsonFile<BrowserDataV2>(join(app.getPath('userData'), 'browser.dat'), 'закладки и вкладки', onError);
   }
 
-  /** `linkOf` maps a server id of the old format to its link (migration only). */
-  async load(linkOf: (serverId: string | undefined) => string | undefined): Promise<void> {
+  /**
+   * `linkOf` maps a server id of the old format to its link, `keyOf` a link to the server's
+   * key (migration only).
+   */
+  async load(
+    linkOf: (serverId: string | undefined) => string | undefined,
+    keyOf: (link: string) => { key: string; name: string } | undefined,
+  ): Promise<void> {
     const r = await this.file.read();
-    this.data = migrate(r?.data, linkOf);
-    if (r && (r.reEncrypt || (r.data as { version?: number }).version !== 2)) this.file.write(this.data);
+    const before = JSON.stringify(r?.data ?? null);
+    this.data = upgradeServerKeys(migrate(r?.data, linkOf), keyOf);
+    if (r && (r.reEncrypt || JSON.stringify(this.data) !== before)) this.file.write(this.data);
   }
 
   flush(): Promise<void> {
@@ -99,7 +107,7 @@ export class BrowserData extends EventEmitter<{
     return p;
   }
 
-  createProfile(input: { name: unknown; color: unknown; serverLink?: string }): ProfileRecord {
+  createProfile(input: { name: unknown; color: unknown; server?: { key: string; name: string } }): ProfileRecord {
     if (this.data.profiles.length >= MAX_PROFILES) throw new Error(`профилей может быть не больше ${MAX_PROFILES}`);
     const name = cleanProfileName(input.name);
     if (this.data.profiles.some((p) => p.name.toLowerCase() === name.toLowerCase())) throw new Error('профиль с таким названием уже есть');
@@ -111,7 +119,8 @@ export class BrowserData extends EventEmitter<{
       name,
       color: input.color.toLowerCase(),
       partition: newPartition(id),
-      serverLink: input.serverLink,
+      serverKey: input.server?.key,
+      serverName: input.server?.name,
       bookmarks: [],
       createdAt: Date.now(),
     };
@@ -158,21 +167,23 @@ export class BrowserData extends EventEmitter<{
     this.save('quiet');
   }
 
-  setServerLink(id: string, link: string | undefined) {
+  /** The profile's server (its key, and its name for when it disappears). */
+  setServer(id: string, server: { key: string; name: string }) {
     const p = this.profile(id);
-    if (p.serverLink === link) return;
-    p.serverLink = link;
-    this.save('quiet');
+    if (p.serverKey === server.key && p.serverName === server.name) return;
+    p.serverKey = server.key;
+    p.serverName = server.name;
+    this.save('profiles');
   }
 
-  setLastExit(id: string, exit: { ip?: string; country?: string; serverLink?: string }) {
+  setLastExit(id: string, exit: { ip?: string; country?: string; serverKey?: string }) {
     const p = this.profile(id);
     const next = {
       lastExitIp: exit.ip && exit.ip !== '?' ? exit.ip : p.lastExitIp,
       lastExitCountry: exit.ip && exit.ip !== '?' ? exit.country : p.lastExitCountry,
-      lastServerLink: exit.serverLink ?? p.lastServerLink,
+      lastServerKey: exit.serverKey ?? p.lastServerKey,
     };
-    if (next.lastExitIp === p.lastExitIp && next.lastExitCountry === p.lastExitCountry && next.lastServerLink === p.lastServerLink) return;
+    if (next.lastExitIp === p.lastExitIp && next.lastExitCountry === p.lastExitCountry && next.lastServerKey === p.lastServerKey) return;
     Object.assign(p, next);
     this.save('quiet');
   }

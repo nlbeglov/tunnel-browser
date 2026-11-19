@@ -7,7 +7,7 @@
 
 import { EventEmitter } from 'node:events';
 import type { ServerProfile, TunnelState } from '../shared/types';
-import { exitInfo, probeTunnel, type ExitInfo, type ProxyEndpoint } from './health';
+import { exitInfo, measureLatency, probeTunnel, type ExitInfo, type ProxyEndpoint } from './health';
 import type { TunnelSession } from './tunnelSession';
 import { buildXrayConfig } from './xrayConfig';
 import { freePort, randomToken, XrayProcess } from './xray';
@@ -31,6 +31,7 @@ export interface TunnelOptions {
   failuresBeforeDown: number;
   probe: (proxy: ProxyEndpoint, timeoutMs: number) => Promise<number>;
   exitInfo: (proxy: ProxyEndpoint) => Promise<ExitInfo>;
+  measure: (proxy: ProxyEndpoint) => Promise<number>;
   /**
    * Runs after the exit is known and before the gate opens, so pages can reach nothing yet:
    * they get the exit's time zone (pageGuard.ts), and the user can be asked about a new IP.
@@ -48,6 +49,7 @@ const DEFAULTS: TunnelOptions = {
   failuresBeforeDown: 2,
   probe: probeTunnel,
   exitInfo,
+  measure: (proxy) => measureLatency(proxy),
   beforeOpen: async () => {},
 };
 
@@ -186,6 +188,17 @@ export class Tunnel extends EventEmitter<{ change: [TunnelState] }> {
     } catch {
       // the window may already be gone
     }
+  }
+
+  /** Measures the ping again on request (the button next to it). */
+  async measureLatency(): Promise<number | undefined> {
+    const gen = this.generation;
+    const creds = this.creds;
+    if (!creds || this.st.status !== 'connected') return undefined;
+    const ms = await this.opt.measure(creds);
+    if (gen !== this.generation || !this.st.exit) return undefined;
+    this.set({ ...this.st, exit: { ...this.st.exit, latencyMs: ms } });
+    return ms;
   }
 
   /**
