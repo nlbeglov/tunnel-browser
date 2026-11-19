@@ -361,8 +361,8 @@ export class ProfileWindow {
   openBookmark(id: string, how: OpenMode) {
     const b = this.ctx.browser.bookmark(this.profileId, id);
     if (!b) return;
-    // From the settings tab the UI decides where it opens: in an empty tab, or in place of
-    // the settings tab (App.tsx). The page under the settings stays as it was.
+    // From the settings tab it opens in place of the settings tab (App.tsx), which only the UI
+    // knows the place of. The page under the settings stays as it was.
     if (how === 'current' && this.tabs.settings === 'active') return this.send('ui:settings-navigate', b.url);
     this.tabs.open(b.url, how);
   }

@@ -94,28 +94,19 @@ export function App() {
     if (at >= 0) setSettings((st) => st && { ...st, after: at > 0 ? (order[at - 1] as number) : null });
   };
 
-  // A query or a bookmark from the settings tab: into an empty tab (the one under the settings
-  // first), and the settings tab stays; with no empty tab, the settings tab becomes the page.
+  // A query or a bookmark from the settings tab opens in it, like in Chrome: the settings tab
+  // becomes that page, in its place. Other tabs, empty ones included, stay as they are.
   const latest = useRef({ tabs, settings, strip });
   latest.current = { tabs, settings, strip };
   const navigateFromSettings = useCallback(
     async (input: string) => {
-      const { tabs: t, settings: st } = latest.current;
-      const under = t.tabs.find((x) => x.id === t.activeId);
-      const empty = under && !under.url ? under : [...t.tabs].reverse().find((x) => !x.url);
-      if (empty) {
-        await api.tabs.navigate(empty.id, input);
-        leaveSettings();
-        await api.tabs.activate(empty.id);
-        return;
-      }
-      const after = st?.after ?? null;
+      const after = latest.current.settings?.after ?? null;
       closeSettings();
       const id = await api.tabs.create(input);
       const order = (await api.tabs.get()).tabs.map((x) => x.id).filter((x) => x !== id);
       await api.tabs.move(id, after === null ? 0 : order.indexOf(after) + 1);
     },
-    [leaveSettings, closeSettings],
+    [closeSettings],
   );
   useEffect(() => api.tabs.onSettingsNavigate((url) => void navigateFromSettings(url).catch((e) => setToast(errText(e)))), [navigateFromSettings]);
 
