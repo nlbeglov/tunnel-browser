@@ -162,35 +162,6 @@ describe.skipIf(!hasCore)('tunnel state when the server goes away', () => {
     expect(await t.measureLatency()).toBeUndefined();
   });
 
-  it('regular checks reuse the kept connection; after trouble or a failure they use new ones', async () => {
-    const calls: boolean[] = [];
-    let up = true;
-    const rtts = [40, 25, 60];
-    const { gate, t } = await connected({
-      checkEveryMs: 30,
-      probeOk: () => up,
-      probe: async (_p, _t, fresh) => {
-        calls.push(fresh);
-        if (!up) throw new Error('таймаут');
-        return rtts.shift() ?? 30;
-      },
-    });
-    expect(await waitFor(() => calls.length >= 3)).toBe(true);
-    expect(calls.slice(0, 3)).toEqual([false, false, false]);
-    // every check shows its own round trip
-    expect([40, 25, 60, 30]).toContain(t.state.exit?.latencyMs);
-    calls.length = 0;
-    gate.emit('trouble');
-    expect(await waitFor(() => calls.length >= 1)).toBe(true);
-    expect(calls[0]).toBe(true);
-    up = false;
-    expect(await waitFor(() => t.state.status === 'degraded')).toBe(true);
-    calls.length = 0;
-    up = true;
-    expect(await waitFor(() => t.state.status === 'connected')).toBe(true);
-    expect(calls[0]).toBe(true);
-  });
-
   it('a quiet page: the regular check finds the dead server too', async () => {
     let up = true;
     const { t } = await connected({ checkEveryMs: 50, probeOk: () => up });

@@ -7,7 +7,7 @@
 
 import { EventEmitter } from 'node:events';
 import type { ServerProfile, TunnelState } from '../shared/types';
-import { checkTunnel, exitInfo, measureLatency, releaseTunnel, type ExitInfo, type ProxyEndpoint } from './health';
+import { exitInfo, measureLatency, probeTunnel, type ExitInfo, type ProxyEndpoint } from './health';
 import type { TunnelSession } from './tunnelSession';
 import { buildXrayConfig } from './xrayConfig';
 import { freePort, randomToken, XrayProcess } from './xray';
@@ -29,10 +29,7 @@ export interface TunnelOptions {
   probeTimeoutMs: number;
   /** consecutive failed checks before the tunnel counts as down */
   failuresBeforeDown: number;
-  /** the regular check; `fresh`: over new connections instead of the kept one (health.ts) */
-  probe: (proxy: ProxyEndpoint, timeoutMs: number, fresh: boolean) => Promise<number>;
-  /** the tunnel is gone: let go of what `probe` keeps for it */
-  release: (proxy: ProxyEndpoint) => void;
+  probe: (proxy: ProxyEndpoint, timeoutMs: number) => Promise<number>;
   exitInfo: (proxy: ProxyEndpoint) => Promise<ExitInfo>;
   measure: (proxy: ProxyEndpoint) => Promise<number>;
   /**
@@ -50,8 +47,7 @@ const DEFAULTS: TunnelOptions = {
   troubleGapMs: 3_000,
   probeTimeoutMs: 5_000,
   failuresBeforeDown: 2,
-  probe: checkTunnel,
-  release: releaseTunnel,
+  probe: probeTunnel,
   exitInfo,
   measure: (proxy) => measureLatency(proxy),
   beforeOpen: async () => {},
@@ -73,8 +69,6 @@ export class Tunnel extends EventEmitter<{ change: [TunnelState] }> {
   private lastCheckAt = 0;
   /** bumps on every connect/disconnect so a slow, superseded attempt cannot win */
   private generation = 0;
-  /** the next check goes over new connections (pages reported trouble) */
-  private freshNext = false;
 
   constructor(
     private readonly gate: TunnelGate,
@@ -89,7 +83,6 @@ export class Tunnel extends EventEmitter<{ change: [TunnelState] }> {
       if (expected) return;
       this.generation++;
       this.stopMonitor();
-      this.dropCreds();
       this.gate.closeGateNow();
       this.set({
         status: 'error',
@@ -114,11 +107,6 @@ export class Tunnel extends EventEmitter<{ change: [TunnelState] }> {
     return this.xray.logs();
   }
 
-  private dropCreds() {
-    if (this.creds) this.opt.release(this.creds);
-    this.creds = null;
-  }
-
   private set(s: TunnelState) {
     this.st = s;
     this.emit('change', s);
@@ -127,7 +115,7 @@ export class Tunnel extends EventEmitter<{ change: [TunnelState] }> {
   async connect(profile: ServerProfile): Promise<void> {
     const gen = ++this.generation;
     this.stopMonitor();
-    this.dropCreds();
+    this.creds = null;
     // The gate drops synchronously inside closeGate(); the UI locks in the same tick, before
     // any of the slow teardown below, so no tab is left on screen with a stale status.
     const closing = this.gate.closeGate();
@@ -162,7 +150,6 @@ export class Tunnel extends EventEmitter<{ change: [TunnelState] }> {
       }
       this.creds = creds;
       this.failures = 0;
-      this.freshNext = false;
       this.lastCheckAt = Date.now();
       this.set({ status: 'connected', profileId: profile.id, profileName: profile.name, exit: { ...exit, ...extra }, since: Date.now() });
       this.schedule(gen, this.opt.checkEveryMs);
@@ -170,7 +157,7 @@ export class Tunnel extends EventEmitter<{ change: [TunnelState] }> {
       if (gen !== this.generation) return;
       await this.gate.closeGate().catch(() => {});
       await this.xray.stop();
-      this.dropCreds();
+      this.creds = null;
       this.set({ status: 'error', profileId: profile.id, profileName: profile.name, message: errorText(e) });
     }
   }
@@ -178,7 +165,7 @@ export class Tunnel extends EventEmitter<{ change: [TunnelState] }> {
   async disconnect(): Promise<void> {
     this.generation++;
     this.stopMonitor();
-    this.dropCreds();
+    this.creds = null;
     const closing = this.gate.closeGate();
     this.set({ status: 'disconnected' });
     try {
@@ -194,7 +181,7 @@ export class Tunnel extends EventEmitter<{ change: [TunnelState] }> {
     this.stopMonitor();
     this.gate.closeGateNow();
     this.xray.killNow();
-    this.dropCreds();
+    this.creds = null;
     if (this.st.status === 'disconnected') return;
     try {
       this.set({ status: 'disconnected' });
@@ -221,7 +208,6 @@ export class Tunnel extends EventEmitter<{ change: [TunnelState] }> {
   trouble(): void {
     if (this.st.status !== 'connected' || this.checking === this.generation) return;
     if (Date.now() - this.lastCheckAt < this.opt.troubleGapMs) return;
-    this.freshNext = true;
     void this.check(this.generation);
   }
 
@@ -241,13 +227,10 @@ export class Tunnel extends EventEmitter<{ change: [TunnelState] }> {
     this.stopMonitor();
     this.checking = gen;
     this.lastCheckAt = Date.now();
-    // Over the kept connection while all is well; over new ones once anything looked wrong.
-    const fresh = this.freshNext || this.failures > 0 || this.st.status !== 'connected';
-    this.freshNext = false;
     let latencyMs: number | null = null;
     let error: unknown;
     try {
-      latencyMs = await this.opt.probe(creds, this.opt.probeTimeoutMs, fresh);
+      latencyMs = await this.opt.probe(creds, this.opt.probeTimeoutMs);
     } catch (e) {
       error = e;
     } finally {
@@ -257,7 +240,6 @@ export class Tunnel extends EventEmitter<{ change: [TunnelState] }> {
 
     if (latencyMs !== null) {
       this.failures = 0;
-      // Every check shows its own round trip: a ping that keeps changing shows the tunnel is alive.
       const exit = this.st.exit ? { ...this.st.exit, latencyMs } : undefined;
       this.set({ ...this.st, status: 'connected', message: undefined, exit });
       this.schedule(gen, this.opt.checkEveryMs);
