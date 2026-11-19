@@ -5,8 +5,8 @@
 
 import { BrowserWindow, Menu, app, clipboard, dialog, nativeImage, nativeTheme, type WebContents } from 'electron';
 import { join } from 'node:path';
-import type { AppMenuEntry, OpenMode, PanelName, ProfilesState, ServerProfile, TunnelState } from '../shared/types';
-import { AppMenu } from './appMenu';
+import type { AppMenuEntry, OpenMode, PanelName, PopupData, ProfilesState, ServerProfile, TunnelState } from '../shared/types';
+import { Popup } from './popup';
 import type { BrowserData } from './browserData';
 import type { ExitInfo } from './health';
 import { serverKey } from './links';
@@ -43,7 +43,7 @@ export class ProfileWindow {
   readonly gate: TunnelSession;
   readonly tunnel: Tunnel;
   readonly tabs: Tabs;
-  private readonly menu: AppMenu;
+  private readonly popup: Popup;
   private sessionTimer: NodeJS.Timeout | null = null;
   private readonly onWebContents: (e: unknown, wc: WebContents) => void;
 
@@ -123,11 +123,12 @@ export class ProfileWindow {
     if (!isMac) win.setMenuBarVisibility(false);
 
     this.tabs = new Tabs(win, gate.ses, gate.guard);
-    this.menu = new AppMenu(win, ctx.uiUrl.replace(/index\.html$/, 'menu.html'), join(__dirname, '../preload/menu.js'));
-    this.tabs.onAttach = () => this.menu.raise();
+    this.popup = new Popup(win, ctx.uiUrl.replace(/index\.html$/, 'popup.html'), join(__dirname, '../preload/popup.js'));
+    this.tabs.onAttach = () => this.popup.raise();
     this.tunnel.on('change', (s: TunnelState) => {
       this.tabs.setLocked(this.tunnel.locked);
       this.send('tunnel:changed', s);
+      this.refreshPanel();
       if (s.status === 'connected') {
         const server = ctx.store.profile(s.profileId);
         const key = server ? serverKey(server) : undefined;
@@ -170,7 +171,60 @@ export class ProfileWindow {
 
   /** The ⋮ menu under the button: its right edge and top in window coordinates. */
   showMenu(at: { right: number; top: number }, items: AppMenuEntry[], act: (id: string) => void) {
-    return this.menu.show(at, items, act);
+    return this.popup.show(at, { kind: 'menu', items }, (id) => {
+      this.popup.hide();
+      act(id);
+    });
+  }
+
+  /** The panel under the IP (this profile's connection) or under the bookmarks button. */
+  showPanel(kind: 'connection' | 'bookmarks', at: { right: number; top: number }, editId?: string) {
+    return this.popup.show(at, this.panelContent(kind, editId), (id, arg) => this.panelAct(kind, id, arg));
+  }
+
+  /** Something the open panel shows has changed. */
+  refreshPanel() {
+    const kind = this.popup.kind;
+    if (kind === 'connection' || kind === 'bookmarks') this.popup.update(this.panelContent(kind));
+  }
+
+  private panelContent(kind: 'connection' | 'bookmarks', editId?: string): PopupData {
+    if (kind === 'bookmarks') return { kind, data: { bookmarks: this.ctx.browser.bookmarksState(this.profileId), editId } };
+    const p = this.profile;
+    const server = this.server();
+    return { kind, data: { tunnel: this.tunnel.state, server, me: { serverName: p.serverName, serverMissing: !!p.serverKey && !server } } };
+  }
+
+  private async panelAct(kind: 'connection' | 'bookmarks', id: string, arg: unknown): Promise<unknown> {
+    const a = (arg ?? {}) as Record<string, unknown>;
+    const s = (v: unknown, max = 8000) => (typeof v === 'string' ? v.slice(0, max) : '');
+    try {
+      if (kind === 'connection') {
+        if (id === 'connect') return await this.connect();
+        if (id === 'disconnect') return await this.tunnel.disconnect();
+        if (id === 'measure') return await this.tunnel.measureLatency();
+        if (id === 'settings') {
+          this.popup.hide();
+          return this.openPanel('servers');
+        }
+      } else {
+        const bid = s(a.id, 100);
+        if (id === 'open') {
+          const how: OpenMode = a.how === 'new-tab' || a.how === 'background' ? a.how : 'current';
+          if (how !== 'background') this.popup.hide();
+          return this.openBookmark(bid, how);
+        }
+        if (id === 'remove') return this.ctx.browser.removeBookmark(this.profileId, bid);
+        if (id === 'update') return this.ctx.browser.updateBookmark(this.profileId, bid, { title: s(a.title, 500), url: s(a.url) });
+        if (id === 'move') return this.ctx.browser.moveBookmark(this.profileId, bid, Number.isInteger(a.to) ? (a.to as number) : 0);
+        if (id === 'context') return this.bookmarkMenu(bid);
+      }
+    } catch (e) {
+      // The panel shows its own errors for edits; the rest go where the UI shows errors.
+      if (id === 'update') throw e;
+      this.send('ui:error', e instanceof Error ? e.message : String(e));
+    }
+    return undefined;
   }
 
   /** The profile was renamed or recoloured. */
@@ -307,11 +361,9 @@ export class ProfileWindow {
   openBookmark(id: string, how: OpenMode) {
     const b = this.ctx.browser.bookmark(this.profileId, id);
     if (!b) return;
-    // From the settings tab: the page under it stays as it was, the site gets a tab of its own.
-    if (how === 'current' && this.tabs.settings === 'active') {
-      this.send('ui:settings-tab', 'close');
-      how = 'new-tab';
-    }
+    // From the settings tab the UI decides where it opens: in an empty tab, or in place of
+    // the settings tab (App.tsx). The page under the settings stays as it was.
+    if (how === 'current' && this.tabs.settings === 'active') return this.send('ui:settings-navigate', b.url);
     this.tabs.open(b.url, how);
   }
 

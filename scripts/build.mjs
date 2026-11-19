@@ -67,8 +67,8 @@ await Promise.all([
   }),
   build({
     ...common,
-    entryPoints: [join(root, 'src/preload/menu.ts')],
-    outfile: join(out, 'preload/menu.js'),
+    entryPoints: [join(root, 'src/preload/popup.ts')],
+    outfile: join(out, 'preload/popup.js'),
     platform: 'node',
     target: 'node22',
     format: 'cjs',
@@ -76,11 +76,12 @@ await Promise.all([
   }),
   build({
     ...common,
-    entryPoints: [join(root, 'src/renderer/menu.ts')],
-    outfile: join(out, 'renderer/menu.js'),
+    entryPoints: [join(root, 'src/renderer/popup.tsx')],
+    outfile: join(out, 'renderer/popup.js'),
     platform: 'browser',
     target: 'chrome130',
     format: 'iife',
+    jsx: 'automatic',
   }),
   build({
     ...common,
@@ -96,7 +97,7 @@ await Promise.all([
 mkdirSync(join(out, 'renderer'), { recursive: true });
 copyFileSync(join(root, 'src/renderer/index.html'), join(out, 'renderer/index.html'));
 copyFileSync(join(root, 'src/renderer/styles.css'), join(out, 'renderer/styles.css'));
-copyFileSync(join(root, 'src/renderer/menu.html'), join(out, 'renderer/menu.html'));
-copyFileSync(join(root, 'src/renderer/menu.css'), join(out, 'renderer/menu.css'));
+copyFileSync(join(root, 'src/renderer/popup.html'), join(out, 'renderer/popup.html'));
+copyFileSync(join(root, 'src/renderer/popup.css'), join(out, 'renderer/popup.css'));
 cpSync(join(root, 'src/renderer/fonts'), join(out, 'renderer/fonts'), { recursive: true });
 console.log(`Сборка готова${smoke ? ' (с самопроверкой)' : ''}. Репозиторий для обновлений: ${repo || 'не задан'}`);

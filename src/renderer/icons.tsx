@@ -41,4 +41,5 @@ export const Gear = ({ size }: P) =>
     size,
   );
 export const Clock = ({ size }: P) => svg(<><circle cx="12" cy="12" r="9" /><path d="M12 7v5l3 2" /></>, size);
+export const Help = ({ size }: P) => svg(<><circle cx="12" cy="12" r="9" /><path d="M9.6 9.4a2.5 2.5 0 1 1 3.4 2.4c-.6.3-1 .8-1 1.5v.4" /><path d="M12 16.8v.01" /></>, size);
 export const Link = ({ size }: P) => svg(<><path d="M10 13a5 5 0 0 0 7 0l3-3a5 5 0 0 0-7-7l-1 1" /><path d="M14 11a5 5 0 0 0-7 0l-3 3a5 5 0 0 0 7 7l1-1" /></>, size);

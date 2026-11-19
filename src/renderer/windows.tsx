@@ -231,16 +231,15 @@ export function ProfilesSection(props: { state: WindowProfilesState; servers: Pr
 
   return (
     <>
-      <Card title="Окна">
-        <p className="s-note">
-          У каждого профиля своё окно, свой сервер и IP, свои куки, входы, закладки и часовой пояс. Сайты не видят, что это
-          один человек.
-        </p>
+      <Card
+        title="Окна"
+        hint="У каждого профиля своё окно, свой сервер и IP, свои куки, входы, закладки и часовой пояс. Сайты не видят, что это один человек."
+      >
         {state.profiles.map((p) => (
           <ProfileRow key={p.id} p={p} state={state} run={run} />
         ))}
       </Card>
-      <Card title="Новый профиль">
+      <Card title="Новый профиль" hint="Занятые цвета не предлагаются: два окна одного цвета перепутать проще всего.">
         <div className="s-row new-profile" hidden={!newVisible}>
           {state.freeColors.length === 0 ? (
             <p className="s-desc">Все цвета заняты: чтобы окна не путались, у каждого профиля свой цвет.</p>
@@ -264,7 +263,6 @@ export function ProfilesSection(props: { state: WindowProfilesState; servers: Pr
               </div>
               <Swatches label="Цвет окна" colors={state.freeColors} value={color} onPick={setColor} />
               <div className="new-profile-actions">
-                <span className="s-desc">Занятые цвета не предлагаются: два окна одного цвета перепутать проще всего.</span>
                 <button
                   className="btn primary"
                   disabled={!name.trim() || !color}

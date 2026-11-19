@@ -45,6 +45,7 @@ const api: BridgeApi = {
     onChange: (cb) => listen('tabs:changed', cb),
     onFocusAddressBar: (cb) => listen('ui:focus-address', cb),
     onSettingsTabCommand: (cb) => listen('ui:settings-tab', cb),
+    onSettingsNavigate: (cb) => listen('ui:settings-navigate', cb),
   },
   bookmarks: {
     get: () => call('bookmarks:get'),
@@ -70,6 +71,7 @@ const api: BridgeApi = {
     check: () => call('updates:check'),
     install: () => call('updates:install'),
     history: () => call('updates:history'),
+    refreshHistory: () => call('updates:refresh-history'),
     onChange: (cb) => listen('updates:changed', cb),
   },
   app: {
@@ -80,6 +82,7 @@ const api: BridgeApi = {
     setSettings: (patch) => call('app:set-settings', patch),
     onSettingsChange: (cb) => listen('settings:changed', cb),
     mainMenu: (x, y) => call('app:main-menu', x, y),
+    panel: (kind, right, top, editId) => call('app:panel', kind, right, top, editId),
     onOpenPanel: (cb) => {
       const fn = (_e: IpcRendererEvent, panel: PanelName, bookmarkId?: string) => cb(panel, bookmarkId);
       ipcRenderer.on('ui:open-panel', fn);
