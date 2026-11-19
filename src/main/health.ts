@@ -82,13 +82,15 @@ export function getViaProxy(proxy: ProxyEndpoint, host: string, path: string, ti
         if (size > 64 * 1024) fail(new Error('слишком большой ответ'));
       });
       s.once('close', () => {
-        const raw = Buffer.concat(chunks).toString('utf8');
-        const m = /^HTTP\/1\.[01] (\d{3})/.exec(raw);
+        const raw = Buffer.concat(chunks);
+        const m = /^HTTP\/1\.[01] (\d{3})/.exec(raw.subarray(0, 16).toString('latin1'));
         if (!m) return fail(new Error('пустой ответ'));
         const bodyAt = raw.indexOf('\r\n\r\n');
+        const head = bodyAt >= 0 ? raw.subarray(0, bodyAt).toString('latin1') : '';
+        const body = bodyAt >= 0 ? raw.subarray(bodyAt + 4) : Buffer.alloc(0);
         const result = {
           status: Number(m[1]),
-          body: bodyAt >= 0 ? raw.slice(bodyAt + 4) : '',
+          body: (/^transfer-encoding:\s*chunked/im.test(head) ? dechunk(body) : body).toString('utf8'),
           ms: Date.now() - started,
           rtt: Math.max(1, Math.round(firstByteAt - sentAt)),
         };
@@ -99,12 +101,66 @@ export function getViaProxy(proxy: ProxyEndpoint, host: string, path: string, ti
   });
 }
 
+/** The body of a `Transfer-Encoding: chunked` answer, without the chunk sizes. */
+export function dechunk(b: Buffer): Buffer {
+  const out: Buffer[] = [];
+  let i = 0;
+  while (i < b.length) {
+    const eol = b.indexOf('\r\n', i);
+    if (eol < 0) break;
+    const size = Number.parseInt(b.subarray(i, eol).toString('latin1').split(';')[0].trim(), 16);
+    if (!Number.isFinite(size) || size <= 0) break;
+    out.push(b.subarray(eol + 2, eol + 2 + size));
+    i = eol + 2 + size + 2;
+  }
+  return Buffer.concat(out);
+}
+
 export interface ExitInfo {
+  /** '?' when no service told it */
   ip: string;
   country?: string;
   /** Cloudflare data centre that answered (IATA code): the exit's region */
   colo?: string;
+  /** the time zone the IP service reports for the exit, when it is not Cloudflare */
+  zone?: string;
   latencyMs: number;
+  /** why the IP is unknown: what each service answered */
+  ipError?: string;
+}
+
+type Located = Pick<ExitInfo, 'ip' | 'country' | 'colo' | 'zone'>;
+
+const line = (body: string, key: string) => new RegExp(`^${key}=(.+)$`, 'm').exec(body)?.[1]?.trim();
+const field = (body: string, key: string) => new RegExp(`"${key}"\\s*:\\s*"([^"]*)"`).exec(body)?.[1]?.trim();
+const trace = (body: string): Partial<Located> => ({ ip: line(body, 'ip'), country: line(body, 'loc'), colo: line(body, 'colo') });
+
+/**
+ * Where the exit IP is learnt, through the tunnel, in this order: the first that answers with
+ * an IP wins. Cloudflare comes first, its data centre tells the region of big countries; the
+ * others are there for when it does not answer or shows a check page instead of the trace.
+ */
+export const IP_SOURCES: Array<{ host: string; path: string; parse: (body: string) => Partial<Located> }> = [
+  { host: 'www.cloudflare.com', path: '/cdn-cgi/trace', parse: trace },
+  { host: 'one.one.one.one', path: '/cdn-cgi/trace', parse: trace },
+  { host: 'ifconfig.co', path: '/json', parse: (b) => ({ ip: field(b, 'ip'), country: field(b, 'country_iso'), zone: field(b, 'time_zone') }) },
+  { host: 'ipinfo.io', path: '/json', parse: (b) => ({ ip: field(b, 'ip'), country: field(b, 'country'), zone: field(b, 'timezone') }) },
+];
+
+const IP_RE = /^(?:\d{1,3}(?:\.\d{1,3}){3}|[0-9a-f]*:[0-9a-f:.]+)$/i;
+
+/** What an IP service answered, checked: a real IP, a two-letter country, or nothing. */
+export function located(found: Partial<Located>): Located | undefined {
+  const ip = found.ip?.trim();
+  if (!ip || !IP_RE.test(ip)) return undefined;
+  const cc = found.country?.trim().toUpperCase();
+  const zone = found.zone?.trim();
+  return {
+    ip,
+    country: cc && /^[A-Z]{2}$/.test(cc) ? cc : undefined,
+    colo: found.colo?.trim() || undefined,
+    zone: zone && /^[A-Za-z_]+(?:\/[A-Za-z0-9_+-]+){1,2}$/.test(zone) ? zone : undefined,
+  };
 }
 
 const PROBES: Array<[string, string]> = [
@@ -157,18 +213,25 @@ export async function measureLatency(proxy: ProxyEndpoint, rounds = 3, timeoutMs
   return Math.min(...times);
 }
 
-/** Learns the public exit IP and country as seen by the internet, and the ping. */
-export async function exitInfo(proxy: ProxyEndpoint): Promise<ExitInfo> {
+/**
+ * Learns the public exit IP and country as seen by the internet, and the ping. The tunnel
+ * works once the probe passes; an unknown IP is not a failure (the reason is kept).
+ */
+export async function exitInfo(proxy: ProxyEndpoint, sources = IP_SOURCES, timeoutMs = 6000): Promise<ExitInfo> {
   const first = await probeTunnel(proxy);
-  try {
-    const r = await getViaProxy(proxy, 'www.cloudflare.com', '/cdn-cgi/trace');
-    // Body may be chunked; the key=value lines survive either way.
-    const ip = /^ip=(.+)$/m.exec(r.body)?.[1]?.trim();
-    const loc = /^loc=(.+)$/m.exec(r.body)?.[1]?.trim();
-    const colo = /^colo=(.+)$/m.exec(r.body)?.[1]?.trim();
-    // Two round trips are better than one: the very first through a fresh core can be slow.
-    return { ip: ip ?? '?', country: loc, colo, latencyMs: Math.min(first, r.rtt) };
-  } catch {
-    return { ip: '?', latencyMs: first };
+  const failures: string[] = [];
+  for (const src of sources) {
+    try {
+      const r = await getViaProxy(proxy, src.host, src.path, timeoutMs);
+      const found = r.status === 200 ? located(src.parse(r.body)) : undefined;
+      if (found) {
+        // Two round trips are better than one: the very first through a fresh core can be slow.
+        return { ...found, latencyMs: Math.min(first, r.rtt) };
+      }
+      failures.push(`${src.host}: ${r.status === 200 ? 'нет IP в ответе' : `ответ ${r.status}`}`);
+    } catch (e) {
+      failures.push(`${src.host}: ${e instanceof Error ? e.message : String(e)}`);
+    }
   }
+  return { ip: '?', latencyMs: first, ipError: failures.join('; ') };
 }

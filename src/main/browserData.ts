@@ -213,6 +213,8 @@ export class BrowserData extends EventEmitter<{
     if (icon && icon.length <= MAX_ICON_CHARS) b.icon = icon;
     p.bookmarks.push(b);
     this.save({ bookmarks: profileId });
+    // The hint has done its job.
+    if (this.data.settings.bookmarksHint) this.setSettings({ bookmarksHint: false });
     return b;
   }
 

@@ -2,8 +2,8 @@
 // locale belongs to another country than its IP address is the classic sign of a VPN, so
 // all of it follows the tunnel's exit instead of this computer. Pure: no Electron imports.
 //
-// Nothing here makes a request: the country and the Cloudflare data centre come from the
-// trace the tunnel check already fetches through the server (health.ts).
+// Nothing here makes a request: the country and the Cloudflare data centre (or the zone an
+// IP service names) come from the lookup the tunnel check makes through the server (health.ts).
 
 import { COUNTRY_ZONE } from './timezones';
 
@@ -68,15 +68,26 @@ const COLO_ZONE: Readonly<Record<string, Readonly<Record<string, string>>>> = {
  * The time zone a local of the exit's country (and region, where the data centre tells)
  * would have. Unknown country: UTC rather than this computer's zone.
  */
-export function exitTimezone(country?: string, colo?: string): string {
+export function exitTimezone(country?: string, colo?: string, zone?: string): string {
   const cc = country?.trim().toUpperCase();
   if (!cc || !/^[A-Z]{2}$/.test(cc)) return FALLBACK_ZONE;
   const byColo = colo ? COLO_ZONE[cc]?.[colo.trim().toUpperCase()] : undefined;
-  return byColo ?? COUNTRY_ZONE[cc] ?? FALLBACK_ZONE;
+  return byColo ?? (zone && isZone(zone) ? zone : undefined) ?? COUNTRY_ZONE[cc] ?? FALLBACK_ZONE;
 }
 
-export function identityFor(country?: string, colo?: string): SiteIdentity {
-  return { timezone: exitTimezone(country, colo), locale: SITE_LOCALE, languages: SITE_LANGUAGES };
+/** A zone this Chromium knows (an IP service can name one it does not). */
+function isZone(zone: string): boolean {
+  try {
+    new Intl.DateTimeFormat('en-US', { timeZone: zone });
+    return true;
+  } catch {
+    return false;
+  }
+}
+
+/** `zone`: the time zone an IP service reported for the exit, used when Cloudflare's data centre does not tell. */
+export function identityFor(country?: string, colo?: string, zone?: string): SiteIdentity {
+  return { timezone: exitTimezone(country, colo, zone), locale: SITE_LOCALE, languages: SITE_LANGUAGES };
 }
 
 /**

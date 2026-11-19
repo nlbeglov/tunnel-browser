@@ -78,7 +78,7 @@ export class ProfileWindow {
       // the new exit. Ask about a new IP now, then give pages the exit's time zone.
       beforeOpen: async (exit, server) => {
         if (!(await this.confirmNewExit(exit, server))) return { cancel: true };
-        const identity = identityFor(exit.country, exit.colo);
+        const identity = identityFor(exit.country, exit.colo, exit.zone);
         await gate.guard.setIdentity(identity);
         return { timezone: identity.timezone };
       },
@@ -285,7 +285,7 @@ export class ProfileWindow {
         'и поймут, что это тот же человек.\n\n' +
         '«Очистить и подключить» удалит куки, входы и данные сайтов этого профиля, а открытые вкладки загрузятся ' +
         'заново. Сервер уже проверен, но окно закрыто для сайтов: пока вы не ответите, они ничего не получают.',
-      checkboxLabel: 'Больше не спрашивать (включить снова: ⋮ → Конфиденциальность и защита)',
+      checkboxLabel: 'Больше не спрашивать (включить снова: ⋮ → Настройки → Конфиденциальность и защита)',
     });
     if (r.response === 2) return false;
     if (r.checkboxChecked) this.ctx.browser.setSettings({ warnOnServerSwitch: false });

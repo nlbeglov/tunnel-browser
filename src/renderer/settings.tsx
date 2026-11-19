@@ -6,7 +6,7 @@
 import { useEffect, useLayoutEffect, useRef, useState, type ReactNode } from 'react';
 import type { BrowserSettings, ProfilesState, ReleaseEntry, TunnelState, UpdateState, WindowProfileInfo, WindowProfilesState } from '../shared/types';
 import { api, errText, useBridge, type Run } from './bridge';
-import { flag, profileLine, usageLine } from './format';
+import { flag, ipText, profileLine, usageLine } from './format';
 import * as I from './icons';
 import { Card, Query, Row, Scope, Switch, useMatch } from './settingsKit';
 import { ProfileBadge, ProfilesSection } from './windows';
@@ -160,7 +160,15 @@ function ConnectionSection(props: Props & { me: WindowProfileInfo | undefined })
         </Row>
         {tunnel.status === 'error' && tunnel.message && <Row title="Не удалось подключиться" desc={tunnel.message} />}
         {up && tunnel.exit && (
-          <Row title="Адрес для сайтов" desc={`${flag(tunnel.exit.country)} ${tunnel.exit.ip}`} search="ip адрес пинг задержка">
+          <Row
+            title="Адрес для сайтов"
+            desc={
+              tunnel.exit.ipError
+                ? `${ipText(tunnel.exit.ip)}. Туннель работает, но сервисы, по которым узнаётся IP, не ответили: ${tunnel.exit.ipError}`
+                : `${flag(tunnel.exit.country)} ${tunnel.exit.ip}`
+            }
+            search="ip адрес пинг задержка"
+          >
             <Ping tunnel={tunnel} run={run} />
           </Row>
         )}
