@@ -40,6 +40,8 @@ export class Tabs extends EventEmitter<{ change: [TabsState]; icon: [pageUrl: st
   private activeId: number | null = null;
   private nextId = 1;
   private bounds: Rectangle = { x: 0, y: 0, width: 0, height: 0 };
+  /** a page view was attached on top: whatever must stay above it (the ⋮ menu) goes up again */
+  onAttach?: () => void;
   /** the UI's settings tab (no page of its own); 'active' hides the page view */
   private settingsTab: SettingsTabState = 'closed';
   private locked = true;
@@ -561,6 +563,7 @@ export class Tabs extends EventEmitter<{ change: [TabsState]; icon: [pageUrl: st
       if (this.attached !== want) {
         this.win.contentView.addChildView(want);
         this.attached = want;
+        this.onAttach?.();
       }
       want.setBounds(this.bounds);
     }

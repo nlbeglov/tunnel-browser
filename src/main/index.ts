@@ -4,7 +4,6 @@ import {
   app,
   dialog,
   ipcMain,
-  nativeImage,
   session,
   type IpcMainEvent,
   type IpcMainInvokeEvent,
@@ -13,7 +12,7 @@ import {
 import { randomUUID } from 'node:crypto';
 import { join } from 'node:path';
 import { pathToFileURL } from 'node:url';
-import type { BrowserSettings, ImportResult, OpenMode, Subscription, UiRect, WindowProfilesState } from '../shared/types';
+import type { AppMenuEntry, BrowserSettings, ImportResult, OpenMode, Subscription, UiRect, WindowProfilesState } from '../shared/types';
 import { BrowserData } from './browserData';
 import { parseMany, serverKey, serverKeyOfLink } from './links';
 import type { UaMetadata } from './pageGuard';
@@ -370,35 +369,41 @@ async function main() {
   handle('updates:check', () => updater.check());
   handle('updates:install', () => updater.install());
 
-  // The ⋮ button: a menu first, settings are its last item.
-  handle('app:main-menu', (w, x: unknown, y: unknown) => {
+  // The ⋮ button: a menu first, settings are its last item (drawn by appMenu.ts).
+  handle('app:main-menu', (w, right: unknown, top: unknown) => {
     const st = profilesState(w);
     const update = updater.state;
-    const pos = (v: unknown) => (typeof v === 'number' && Number.isFinite(v) ? Math.max(0, Math.round(v)) : 0);
-    Menu.buildFromTemplate([
-      { label: 'Новая вкладка', accelerator: 'CmdOrCtrl+T', click: () => w.tabs.create() },
+    const num = (v: unknown) => (typeof v === 'number' && Number.isFinite(v) ? Math.max(0, Math.round(v)) : 0);
+    const key = (k: string) => (isMac ? `⌘${k}` : `Ctrl+${k}`);
+    const items: AppMenuEntry[] = [
+      { id: 'new-tab', label: 'Новая вкладка', accel: key('T') },
       {
+        id: 'new-window',
         label: 'Новое окно',
-        submenu: [
-          ...st.profiles.map(
-            (p): Electron.MenuItemConstructorOptions => ({
-              label: p.current ? `${p.name} (это окно)` : p.open ? `${p.name} (уже открыто)` : p.name,
-              sublabel: p.exit?.ip && p.exit.ip !== '?' ? `${p.exit.country ?? ''} ${p.exit.ip}`.trim() : undefined,
-              icon: colorDot(p.color),
-              enabled: !p.current,
-              click: () => void openWindow(p.id, w.win),
-            }),
-          ),
-          { type: 'separator' },
-          { label: 'Новый профиль…', accelerator: 'CmdOrCtrl+N', click: () => w.openPanel('profiles') },
+        sub: [
+          ...st.profiles.map((p) => ({
+            id: `profile:${p.id}`,
+            label: p.name,
+            color: p.color,
+            country: p.exit?.country,
+            note: p.current ? 'это окно' : p.open ? 'открыто' : undefined,
+            disabled: p.current,
+          })),
+          'separator',
+          { id: 'new-profile', label: 'Новый профиль…', accel: key('N') },
         ],
       },
-      { type: 'separator' },
-      ...(update.status === 'available'
-        ? ([{ label: `Обновить до версии ${update.version}`, click: () => void updater.install() }, { type: 'separator' }] as Electron.MenuItemConstructorOptions[])
-        : []),
-      { label: 'Настройки', click: () => w.openPanel('settings') },
-    ]).popup({ window: w.win, x: pos(x), y: pos(y) });
+      'separator',
+      ...(update.status === 'available' ? [{ id: 'update', label: `Обновить до версии ${update.version}` }, 'separator' as const] : []),
+      { id: 'settings', label: 'Настройки' },
+    ];
+    return w.showMenu({ right: num(right), top: num(top) }, items, (id) => {
+      if (id === 'new-tab') w.tabs.create();
+      else if (id === 'new-profile') w.openPanel('profiles');
+      else if (id === 'settings') w.openPanel('settings');
+      else if (id === 'update') void updater.install();
+      else if (id.startsWith('profile:')) void openWindow(id.slice('profile:'.length), w.win);
+    });
   });
   handle('updates:history', () => releaseHistory());
 
@@ -633,23 +638,3 @@ function buildMenu(focused: () => ProfileWindow | undefined, hooks: MenuHooks) {
   Menu.setApplicationMenu(Menu.buildFromTemplate(template));
 }
 
-/** A round dot of the profile's colour for menus (32 px drawn, shown at 16). */
-function colorDot(hex: string): Electron.NativeImage {
-  const n = Number.parseInt(hex.replace('#', ''), 16) || 0;
-  const [r, g, b] = [(n >> 16) & 255, (n >> 8) & 255, n & 255];
-  const size = 32;
-  const buf = Buffer.alloc(size * size * 4);
-  for (let y = 0; y < size; y++) {
-    for (let x = 0; x < size; x++) {
-      const d = Math.hypot(x + 0.5 - size / 2, y + 0.5 - size / 2);
-      const a = Math.max(0, Math.min(1, 11.5 - d));
-      const i = (y * size + x) * 4;
-      // BGRA, premultiplied
-      buf[i] = Math.round(b * a);
-      buf[i + 1] = Math.round(g * a);
-      buf[i + 2] = Math.round(r * a);
-      buf[i + 3] = Math.round(255 * a);
-    }
-  }
-  return nativeImage.createFromBitmap(buf, { width: size, height: size, scaleFactor: 2 });
-}

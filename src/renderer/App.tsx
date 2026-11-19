@@ -2,6 +2,7 @@ import { useCallback, useEffect, useLayoutEffect, useRef, useState, type FormEve
 import type { BookmarksState, BrowserSettings, ProfilesState, TabInfo, TabsState, TunnelState, UpdateState, WindowProfileInfo, WindowProfilesState } from '../shared/types';
 import { BookmarkStar, BookmarkTiles, BookmarksBar, BookmarksPanel } from './bookmarks';
 import { SiteIcon, api, errText, useBridge, type Run } from './bridge';
+import { timeIn, useNow, zoneLabel } from './clock';
 import { flag, ipText } from './format';
 import * as I from './icons';
 import { Ping, SettingsView, type SettingsSection } from './settings';
@@ -387,7 +388,7 @@ function Toolbar(props: {
         className={`icon-btn ${updateReady ? 'badge' : ''}`}
         onClick={(e) => {
           const r = e.currentTarget.getBoundingClientRect();
-          void api.app.mainMenu(r.left, r.bottom + 2);
+          void api.app.mainMenu(r.right, r.bottom + 4);
         }}
         aria-label="Меню"
         aria-haspopup="menu"
@@ -600,6 +601,23 @@ function LockScreen(props: {
   );
 }
 
+/** What sites see of time and language: the clock of the exit's zone, ticking. */
+function SiteClock({ zone }: { zone: string }) {
+  const now = useNow();
+  return (
+    <div className="start-note" title={`Часовой пояс ${zone}. Так сайты не отличат вас от жителя страны сервера по часам и языку.`}>
+      <I.Clock size={14} />
+      <span>Для сайтов</span>
+      <time className="clock" dateTime={now.toISOString()}>
+        {timeIn(zone, now)}
+      </time>
+      <span>{zoneLabel(zone, now)}</span>
+      <span className="sep" aria-hidden="true" />
+      <span>English (US)</span>
+    </div>
+  );
+}
+
 function StartPage({ tab, tunnel, bookmarks, run }: { tab: TabInfo; tunnel: TunnelState; bookmarks: BookmarksState; run: Run }) {
   const [q, setQ] = useState('');
   return (
@@ -619,11 +637,7 @@ function StartPage({ tab, tunnel, bookmarks, run }: { tab: TabInfo; tunnel: Tunn
             </>
           )}
         </div>
-        {tunnel.exit?.timezone && (
-          <div className="start-note muted small" title="Так сайты не отличат вас от жителя страны сервера по часам и языку">
-            Для сайтов: часовой пояс {tunnel.exit.timezone}, язык English (US)
-          </div>
-        )}
+        {tunnel.exit?.timezone && <SiteClock zone={tunnel.exit.timezone} />}
         <form
           className="start-search"
           onSubmit={(e) => {

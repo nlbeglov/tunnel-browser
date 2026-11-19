@@ -6,6 +6,7 @@
 import { useEffect, useLayoutEffect, useRef, useState, type ReactNode } from 'react';
 import type { BrowserSettings, ProfilesState, ReleaseEntry, TunnelState, UpdateState, WindowProfileInfo, WindowProfilesState } from '../shared/types';
 import { api, errText, useBridge, type Run } from './bridge';
+import { timeIn, useNow, zoneLabel } from './clock';
 import { flag, ipText, profileLine, usageLine } from './format';
 import * as I from './icons';
 import { Card, Query, Row, Scope, Switch, useMatch } from './settingsKit';
@@ -172,17 +173,22 @@ function ConnectionSection(props: Props & { me: WindowProfileInfo | undefined })
             <Ping tunnel={tunnel} run={run} />
           </Row>
         )}
-        {up && tunnel.exit?.timezone && (
-          <Row
-            title="Часовой пояс и язык для сайтов"
-            desc={`${tunnel.exit.timezone}, английский (США). Так сайты не отличат вас от жителя страны сервера.`}
-            search="часовой пояс язык"
-          />
-        )}
+        {up && tunnel.exit?.timezone && <ZoneRow zone={tunnel.exit.timezone} />}
       </Card>
       <ServerList servers={servers} tunnel={tunnel} run={run} />
       <AddServers />
     </>
+  );
+}
+
+function ZoneRow({ zone }: { zone: string }) {
+  const now = useNow();
+  return (
+    <Row
+      title="Время и язык для сайтов"
+      desc={`${timeIn(zone, now)}, ${zoneLabel(zone, now)} (${zone}), английский (США). Так сайты не отличат вас от жителя страны сервера.`}
+      search="часовой пояс время язык"
+    />
   );
 }
 

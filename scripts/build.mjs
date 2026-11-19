@@ -67,6 +67,23 @@ await Promise.all([
   }),
   build({
     ...common,
+    entryPoints: [join(root, 'src/preload/menu.ts')],
+    outfile: join(out, 'preload/menu.js'),
+    platform: 'node',
+    target: 'node22',
+    format: 'cjs',
+    external: ['electron'],
+  }),
+  build({
+    ...common,
+    entryPoints: [join(root, 'src/renderer/menu.ts')],
+    outfile: join(out, 'renderer/menu.js'),
+    platform: 'browser',
+    target: 'chrome130',
+    format: 'iife',
+  }),
+  build({
+    ...common,
     entryPoints: [join(root, 'src/renderer/main.tsx')],
     outfile: join(out, 'renderer/app.js'),
     platform: 'browser',
@@ -79,5 +96,7 @@ await Promise.all([
 mkdirSync(join(out, 'renderer'), { recursive: true });
 copyFileSync(join(root, 'src/renderer/index.html'), join(out, 'renderer/index.html'));
 copyFileSync(join(root, 'src/renderer/styles.css'), join(out, 'renderer/styles.css'));
+copyFileSync(join(root, 'src/renderer/menu.html'), join(out, 'renderer/menu.html'));
+copyFileSync(join(root, 'src/renderer/menu.css'), join(out, 'renderer/menu.css'));
 cpSync(join(root, 'src/renderer/fonts'), join(out, 'renderer/fonts'), { recursive: true });
 console.log(`Сборка готова${smoke ? ' (с самопроверкой)' : ''}. Репозиторий для обновлений: ${repo || 'не задан'}`);
