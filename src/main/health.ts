@@ -174,6 +174,11 @@ const PROBES: Array<[string, string]> = [
  * within one timeout.
  */
 export function probeTunnel(proxy: ProxyEndpoint, timeoutMs = 8000): Promise<number> {
+  return probeTunnelFrom(proxy, timeoutMs).then((r) => r.rtt);
+}
+
+/** probeTunnel, telling which host answered first. */
+export function probeTunnelFrom(proxy: ProxyEndpoint, timeoutMs = 8000): Promise<{ rtt: number; host: string }> {
   return new Promise((resolve, reject) => {
     let left = PROBES.length;
     let last: unknown;
@@ -183,11 +188,189 @@ export function probeTunnel(proxy: ProxyEndpoint, timeoutMs = 8000): Promise<num
     };
     for (const [host, path] of PROBES) {
       getViaProxy(proxy, host, path, timeoutMs).then(
-        (r) => (r.status === 204 ? resolve(r.rtt) : failed(new Error(`${host} ответил ${r.status}`))),
+        (r) => (r.status === 204 ? resolve({ rtt: r.rtt, host }) : failed(new Error(`${host} ответил ${r.status}`))),
         failed,
       );
     }
   });
+}
+
+class TimeoutError extends Error {
+  constructor() {
+    super('таймаут');
+  }
+}
+
+/**
+ * The regular check over one HTTPS connection through the tunnel that stays open between
+ * checks: a check is one small request (under a kilobyte) instead of a new connection and TLS
+ * handshake each time (about ten). When the connection is gone (the site or Xray closed it),
+ * it is opened again; its setup is never part of the measured time.
+ */
+export class KeepAlivePing {
+  private sock: tls.TLSSocket | null = null;
+  private host = PROBES[0][0];
+
+  constructor(
+    private readonly proxy: ProxyEndpoint,
+    /** for tests: a CA for the fake site */
+    private readonly tlsExtra: tls.ConnectionOptions = {},
+  ) {}
+
+  get connected(): boolean {
+    return this.sock !== null;
+  }
+
+  /** The host whose probe answered last: the kept connection goes there from now on. */
+  prefer(host: string) {
+    if (host === this.host || !PROBES.some(([h]) => h === host)) return;
+    this.host = host;
+    this.close();
+  }
+
+  close() {
+    this.sock?.destroy();
+    this.sock = null;
+  }
+
+  async ping(timeoutMs: number): Promise<number> {
+    const deadline = Date.now() + timeoutMs;
+    const reused = this.sock !== null;
+    try {
+      return await this.request(this.sock ?? (await this.open(timeoutMs)), deadline);
+    } catch (e) {
+      this.close();
+      // The other side may have closed a kept connection just now: one new attempt. A
+      // timeout is a real answer, though: the server is not getting through.
+      if (!reused || e instanceof TimeoutError || Date.now() >= deadline) throw e;
+      try {
+        return await this.request(await this.open(deadline - Date.now()), deadline);
+      } catch (again) {
+        this.close();
+        throw again;
+      }
+    }
+  }
+
+  private open(timeoutMs: number): Promise<tls.TLSSocket> {
+    const host = this.host;
+    return new Promise((resolve, reject) => {
+      const parts: Array<{ destroy(): void }> = [];
+      let done = false;
+      const fail = (e: Error) => {
+        if (done) return;
+        done = true;
+        clearTimeout(timer);
+        for (const p of parts) p.destroy();
+        reject(e);
+      };
+      const timer = setTimeout(() => fail(new TimeoutError()), Math.max(1, timeoutMs));
+      const auth = Buffer.from(`${this.proxy.user}:${this.proxy.pass}`).toString('base64');
+      const req = http.request({
+        host: '127.0.0.1',
+        port: this.proxy.port,
+        method: 'CONNECT',
+        path: `${host}:443`,
+        headers: { Host: `${host}:443`, 'Proxy-Authorization': `Basic ${auth}` },
+        agent: false,
+      });
+      parts.push(req);
+      req.on('error', fail);
+      req.once('connect', (res, socket) => {
+        // Permanent listeners: a socket can report errors after it is set up (see getViaProxy).
+        socket.on('error', (e) => fail(e));
+        parts.push(socket);
+        if (done) return socket.destroy();
+        if (res.statusCode !== 200) return fail(new Error(`прокси ответил ${res.statusCode}`));
+        const s = tls.connect({ socket, servername: host, ALPNProtocols: ['http/1.1'], ...this.tlsExtra });
+        parts.push(s);
+        s.on('error', (e) => fail(e));
+        s.once('secureConnect', () => {
+          if (done) return;
+          done = true;
+          clearTimeout(timer);
+          const drop = () => {
+            if (this.sock === s) this.sock = null;
+            s.destroy();
+          };
+          s.on('error', drop);
+          s.on('close', drop);
+          socket.on('close', drop);
+          resolve(s);
+        });
+      });
+      req.end();
+    });
+  }
+
+  private request(s: tls.TLSSocket, deadline: number): Promise<number> {
+    this.sock = s;
+    const host = this.host;
+    const path = PROBES.find(([h]) => h === host)?.[1] ?? '/generate_204';
+    return new Promise((resolve, reject) => {
+      let buf = Buffer.alloc(0);
+      let sentAt = 0;
+      let firstByteAt = 0;
+      const finish = (fn: () => void) => {
+        clearTimeout(timer);
+        s.off('data', onData);
+        s.off('close', onClose);
+        s.off('error', onError);
+        fn();
+      };
+      const timer = setTimeout(() => finish(() => reject(new TimeoutError())), Math.max(1, deadline - Date.now()));
+      const onData = (c: Buffer) => {
+        if (!firstByteAt) firstByteAt = performance.now();
+        buf = Buffer.concat([buf, c]);
+        if (buf.length > 16 * 1024) return finish(() => reject(new Error('слишком большой ответ')));
+        const end = buf.indexOf('\r\n\r\n');
+        if (end < 0) return;
+        const head = buf.subarray(0, end).toString('latin1');
+        const status = Number(/^HTTP\/1\.[01] (\d{3})/.exec(head)?.[1] ?? 0);
+        finish(() => {
+          if (status !== 204) {
+            this.close();
+            return reject(new Error(`${host} ответил ${status || 'непонятно что'}`));
+          }
+          // A body to skip, or the site is about to close: start over next time.
+          const length = Number(/^content-length:\s*(\d+)/im.exec(head)?.[1] ?? 0);
+          if (length > 0 || /^connection:\s*close/im.test(head) || /^transfer-encoding:/im.test(head)) this.close();
+          resolve(Math.max(1, Math.round(firstByteAt - sentAt)));
+        });
+      };
+      const onClose = () => finish(() => reject(new Error('соединение закрыто')));
+      const onError = (e: Error) => finish(() => reject(e));
+      s.on('data', onData);
+      s.on('close', onClose);
+      s.on('error', onError);
+      if (s.destroyed) return onClose();
+      sentAt = performance.now();
+      s.write(`GET ${path} HTTP/1.1\r\nHost: ${host}\r\nUser-Agent: Mozilla/5.0\r\nAccept: */*\r\n\r\n`);
+    });
+  }
+}
+
+const kept = new WeakMap<ProxyEndpoint, KeepAlivePing>();
+
+/**
+ * The tunnel's regular check: one request over the kept connection. `fresh` (after a failed
+ * check, while the server is down, when pages report trouble) asks both probe hosts over new
+ * connections, like the first check: a kept connection can still work while new ones through
+ * the server fail, and those are what pages need.
+ */
+export async function checkTunnel(proxy: ProxyEndpoint, timeoutMs: number, fresh = false): Promise<number> {
+  let k = kept.get(proxy);
+  if (!k) kept.set(proxy, (k = new KeepAlivePing(proxy)));
+  if (!fresh) return k.ping(timeoutMs);
+  const { rtt, host } = await probeTunnelFrom(proxy, timeoutMs);
+  k.prefer(host);
+  return rtt;
+}
+
+/** The tunnel is gone: close its kept connection. */
+export function releaseTunnel(proxy: ProxyEndpoint): void {
+  kept.get(proxy)?.close();
+  kept.delete(proxy);
 }
 
 /**

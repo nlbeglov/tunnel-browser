@@ -1,0 +1,112 @@
+/* The ⋮ menu (menu.ts): over a transparent view that covers the window. Tokens from styles.css. */
+html,
+body.menu-page {
+  background: transparent;
+  overflow: hidden;
+}
+
+.menu-backdrop {
+  position: fixed;
+  inset: 0;
+}
+
+.app-menu {
+  position: fixed;
+  min-width: 248px;
+  max-width: 340px;
+  padding: 6px 0;
+  border: 1px solid var(--line);
+  border-radius: 10px;
+  background: var(--card);
+  box-shadow: 0 10px 30px rgb(0 0 0 / 0.3), 0 1px 3px rgb(0 0 0 / 0.2);
+  outline: none;
+  animation: menu-in 90ms ease-out;
+}
+
+@keyframes menu-in {
+  from {
+    opacity: 0;
+    transform: translateY(-4px);
+  }
+}
+
+@media (prefers-reduced-motion: reduce) {
+  .app-menu {
+    animation: none;
+  }
+}
+
+.mi {
+  display: flex;
+  align-items: center;
+  gap: 10px;
+  width: 100%;
+  height: 32px;
+  padding: 0 14px;
+  border: 0;
+  background: transparent;
+  color: var(--text);
+  font: inherit;
+  text-align: left;
+  cursor: default;
+}
+
+.mi:hover:not(:disabled),
+.mi:focus-visible,
+.mi.open {
+  background: var(--bg-hover);
+  outline: none;
+}
+
+.mi:disabled {
+  color: var(--muted);
+}
+
+.mi-icon {
+  display: flex;
+  align-items: center;
+  gap: 4px;
+  min-width: 16px;
+}
+
+.mi-dot {
+  width: 10px;
+  height: 10px;
+  border-radius: 50%;
+  background: var(--c);
+}
+
+.mi-flag {
+  font-size: 14px;
+  line-height: 1;
+}
+
+.mi-label {
+  flex: 1;
+  min-width: 0;
+  overflow: hidden;
+  white-space: nowrap;
+  text-overflow: ellipsis;
+}
+
+.mi-note,
+.mi-accel {
+  color: var(--muted);
+  font-size: 12px;
+  white-space: nowrap;
+}
+
+.mi-accel {
+  margin-left: 16px;
+}
+
+.mi-more {
+  display: grid;
+  color: var(--muted);
+}
+
+.mi-sep {
+  height: 1px;
+  margin: 6px 0;
+  background: var(--line);
+}

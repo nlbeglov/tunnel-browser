@@ -143,6 +143,29 @@ export type PanelName = 'servers' | 'settings' | 'bookmarks' | 'profiles';
  * is the active one, the page view of the selected tab is hidden.
  */
 export type SettingsTabState = 'closed' | 'open' | 'active';
+/** An item of the ⋮ menu (drawn by menu.ts over the window, under the button). */
+export interface AppMenuItem {
+  id: string;
+  label: string;
+  /** keyboard shortcut, shown on the right */
+  accel?: string;
+  disabled?: boolean;
+  /** a profile's colour, as a dot */
+  color?: string;
+  /** a country code: its flag next to the dot */
+  country?: string;
+  /** quiet text after the label */
+  note?: string;
+  sub?: AppMenuEntry[];
+}
+export type AppMenuEntry = AppMenuItem | 'separator';
+export interface AppMenuShow {
+  items: AppMenuEntry[];
+  /** right edge and top of the menu, in window coordinates: it opens leftwards from the button */
+  right: number;
+  top: number;
+}
+
 /** What the menu's tab commands ask of the settings tab when it is open. */
 export type SettingsTabCommand = 'close' | 'next' | 'prev';
 
@@ -289,8 +312,8 @@ export interface BridgeApi {
     setSettings(patch: Partial<BrowserSettings>): Promise<BrowserSettings>;
     onSettingsChange(cb: (s: BrowserSettings) => void): () => void;
     onOpenPanel(cb: (panel: PanelName, bookmarkId?: string) => void): () => void;
-    /** the ⋮ menu, under the button (window coordinates) */
-    mainMenu(x: number, y: number): Promise<void>;
+    /** the ⋮ menu under the button: its right edge and top, in window coordinates */
+    mainMenu(right: number, top: number): Promise<void>;
     onFullScreen(cb: (full: boolean) => void): () => void;
     /** Windows: colours for the window buttons drawn over the tab strip */
     setTitleBarColors(colors: { color: string; symbolColor: string }): void;

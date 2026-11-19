@@ -5,7 +5,8 @@
 
 import { BrowserWindow, Menu, app, clipboard, dialog, nativeImage, nativeTheme, type WebContents } from 'electron';
 import { join } from 'node:path';
-import type { OpenMode, PanelName, ProfilesState, ServerProfile, TunnelState } from '../shared/types';
+import type { AppMenuEntry, OpenMode, PanelName, ProfilesState, ServerProfile, TunnelState } from '../shared/types';
+import { AppMenu } from './appMenu';
 import type { BrowserData } from './browserData';
 import type { ExitInfo } from './health';
 import { serverKey } from './links';
@@ -42,6 +43,7 @@ export class ProfileWindow {
   readonly gate: TunnelSession;
   readonly tunnel: Tunnel;
   readonly tabs: Tabs;
+  private readonly menu: AppMenu;
   private sessionTimer: NodeJS.Timeout | null = null;
   private readonly onWebContents: (e: unknown, wc: WebContents) => void;
 
@@ -121,6 +123,8 @@ export class ProfileWindow {
     if (!isMac) win.setMenuBarVisibility(false);
 
     this.tabs = new Tabs(win, gate.ses, gate.guard);
+    this.menu = new AppMenu(win, ctx.uiUrl.replace(/index\.html$/, 'menu.html'), join(__dirname, '../preload/menu.js'));
+    this.tabs.onAttach = () => this.menu.raise();
     this.tunnel.on('change', (s: TunnelState) => {
       this.tabs.setLocked(this.tunnel.locked);
       this.send('tunnel:changed', s);
@@ -162,6 +166,11 @@ export class ProfileWindow {
 
   title(): string {
     return `${this.ctx.browser.profile(this.profileId).name} — Tunnel Browser`;
+  }
+
+  /** The ⋮ menu under the button: its right edge and top in window coordinates. */
+  showMenu(at: { right: number; top: number }, items: AppMenuEntry[], act: (id: string) => void) {
+    return this.menu.show(at, items, act);
   }
 
   /** The profile was renamed or recoloured. */
