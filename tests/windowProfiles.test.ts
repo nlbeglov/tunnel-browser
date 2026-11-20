@@ -3,7 +3,7 @@
 
 import { describe, expect, it } from 'vitest';
 import { fetchableIconUrl, iconType } from '../src/main/favicon';
-import { parseLink, serverKey, serverKeyOfLink } from '../src/main/links';
+import { findServer, isSameServer, parseLink, serverKey, serverKeyOfLink } from '../src/main/links';
 import {
   FIRST_PARTITION,
   FIRST_PROFILE_ID,
@@ -75,6 +75,34 @@ describe("a profile's server", () => {
     const otherUser = before.replace(UUID, 'aaaaaaaa-7350-4ed6-829b-d32f7fb9a2b6');
     const otherPort = before.replace(':443?', ':8443?');
     for (const l of [otherUser, otherPort, LINKS.trojan]) expect(serverKey(parseLink(l))).not.toBe(serverKey(parseLink(before)));
+  });
+
+  it('is still the same server when the provider picks another Reality short id, spiderX or fingerprint', () => {
+    // What many provider panels do on every subscription download: the server is the same.
+    const stored = serverKey(parseLink(before));
+    const redrawn = parseLink(after.replace('sid=6ba85179e30d4fc2', 'sid=a1b2').replace('spx=%2F', 'spx=%2Fxyz').replace('fp=chrome', 'fp=firefox'));
+    expect(serverKey(redrawn)).not.toBe(stored);
+    expect(findServer([parseLink(LINKS.trojan), redrawn], stored)).toBe(redrawn);
+    expect(isSameServer(stored, redrawn)).toBe(true);
+  });
+
+  it('the exact settings win over the same server with changed details', () => {
+    const stored = serverKey(parseLink(before));
+    const changed = parseLink(before.replace('sid=6ba85179e30d4fc2', 'sid=a1b2'));
+    const exact = parseLink(after);
+    expect(findServer([changed, exact], stored)).toBe(exact);
+  });
+
+  it('another address, port or user is another server: none is picked for the profile', () => {
+    const stored = serverKey(parseLink(before));
+    const others = [
+      before.replace('nl1.example.com', 'nl2.example.com'),
+      before.replace(':443?', ':8443?'),
+      before.replace(UUID, 'aaaaaaaa-7350-4ed6-829b-d32f7fb9a2b6'),
+    ].map((l) => parseLink(l));
+    expect(findServer(others, stored)).toBeUndefined();
+    expect(findServer([parseLink(LINKS.trojan)], stored)).toBeUndefined();
+    expect(findServer([parseLink(before)], undefined)).toBeUndefined();
   });
 
   it('0.4.0 profiles kept the server by link: they get its key, even if it was renamed since', () => {

@@ -9,7 +9,7 @@ import type { AppMenuEntry, OpenMode, PanelName, PopupData, ProfilesState, Serve
 import { Popup } from './popup';
 import type { BrowserData } from './browserData';
 import type { ExitInfo } from './health';
-import { serverKey } from './links';
+import { findServer, isSameServer, serverKey } from './links';
 import { identityFor, isNewExit } from './identity';
 import type { UaMetadata } from './pageGuard';
 import type { Store } from './store';
@@ -134,7 +134,7 @@ export class ProfileWindow {
         const key = server ? serverKey(server) : undefined;
         ctx.browser.setLastExit(profileId, { ip: s.exit?.ip, country: s.exit?.country, serverKey: key });
         // The provider may have renamed it: remember the name it has now.
-        if (server && key && key === this.profile.serverKey) ctx.browser.setServer(profileId, { key, name: server.name });
+        if (server && key && isSameServer(this.profile.serverKey, server)) ctx.browser.setServer(profileId, { key, name: server.name });
       }
       this.ctx.profilesChanged();
     });
@@ -257,8 +257,7 @@ export class ProfileWindow {
 
   /** The server this profile uses, found by its connection settings; none is guessed. */
   server(): ServerProfile | undefined {
-    const key = this.profile.serverKey;
-    return key ? this.ctx.store.state().profiles.find((s) => serverKey(s) === key) : undefined;
+    return findServer(this.ctx.store.state().profiles, this.profile.serverKey);
   }
 
   selectedServerId(): string | undefined {
@@ -330,7 +329,7 @@ export class ProfileWindow {
    */
   private async confirmNewExit(exit: ExitInfo, server: ServerProfile): Promise<boolean> {
     const p = this.profile;
-    if (!isNewExit(exit.ip, p.lastExitIp, !!p.lastServerKey && p.lastServerKey !== serverKey(server))) return true;
+    if (!isNewExit(exit.ip, p.lastExitIp, !!p.lastServerKey && !isSameServer(p.lastServerKey, server))) return true;
     if (!this.ctx.browser.settings().warnOnServerSwitch) return true;
     const cookies = await this.gate.ses.cookies.get({}).catch(() => []);
     if (!cookies.length) return true;
