@@ -15,7 +15,7 @@ import { join } from 'node:path';
 import { pathToFileURL } from 'node:url';
 import type { AppMenuEntry, BrowserSettings, ImportResult, OpenMode, ReleaseHistory, Subscription, UiRect, WindowProfilesState } from '../shared/types';
 import { BrowserData } from './browserData';
-import { parseMany, serverKey, serverKeyOfLink } from './links';
+import { findServer, parseMany, serverKey, serverKeyOfLink } from './links';
 import type { UaMetadata } from './pageGuard';
 import { ProfileWindow, type AppContext } from './profileWindow';
 import { Store } from './store';
@@ -149,7 +149,7 @@ async function main() {
         const open = windows.find((x) => x.profileId === p.id);
         const st = open?.tunnel.state;
         const live = st && (st.status === 'connected' || st.status === 'degraded') ? st.exit : undefined;
-        const server = p.serverKey ? servers.find((s) => serverKey(s) === p.serverKey) : undefined;
+        const server = findServer(servers, p.serverKey);
         return {
           id: p.id,
           name: p.name,
@@ -177,6 +177,13 @@ async function main() {
   });
   updater.on('change', (s) => windows.forEach((w) => w.send('updates:changed', s)));
   store.on('change', () => {
+    // A subscription refresh may have changed a profile's server details (or its name): the
+    // profile keeps up with them, so its key matches exactly again.
+    const servers = store.state().profiles;
+    for (const p of browser.profiles()) {
+      const s = findServer(servers, p.serverKey);
+      if (s && (serverKey(s) !== p.serverKey || s.name !== p.serverName)) browser.setServer(p.id, { key: serverKey(s), name: s.name });
+    }
     for (const w of windows) {
       w.send('profiles:changed', w.serversState());
       w.refreshPanel();

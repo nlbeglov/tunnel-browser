@@ -392,9 +392,9 @@ export function parseMany(body: string): ParsedBatch {
 }
 
 /**
- * What makes a server the same server: everything that goes into the connection, not its
- * name or the link's text. Providers put the traffic left or a date into the name, which
- * changes the link on every subscription refresh; the key stays.
+ * The connection settings of a server, not its name or the link's text: providers put the
+ * traffic left or a date into the name, which changes the link on every subscription refresh.
+ * This is what a profile stores; it is matched with findServer.
  */
 export function serverKey(p: ServerProfile): string {
   const { id: _id, name: _name, link: _link, subscriptionId: _sub, ...connection } = p;
@@ -410,6 +410,44 @@ export function serverKey(p: ServerProfile): string {
           )
         : v;
   return JSON.stringify(sorted(connection));
+}
+
+/**
+ * The server itself: its protocol, address and port, and who you are on it (user id or
+ * password). Not the rest: many provider panels pick the Reality short id, spiderX or the
+ * fingerprint anew for every subscription download, so a server keeps changing those.
+ */
+export function serverIdentity(p: { protocol?: unknown; address?: unknown; port?: unknown; uuid?: unknown; password?: unknown }): string {
+  const text = (v: unknown) => (typeof v === 'string' ? v.trim() : '');
+  return JSON.stringify([text(p.protocol), text(p.address).toLowerCase(), Number(p.port) || 0, text(p.uuid).toLowerCase(), text(p.password)]);
+}
+
+/** The identity inside a stored key (keys are serverKey's JSON), if it can be read. */
+function identityOfKey(key: string): string | undefined {
+  try {
+    const c = JSON.parse(key) as Record<string, unknown> | null;
+    return c && typeof c === 'object' && typeof c.address === 'string' ? serverIdentity(c) : undefined;
+  } catch {
+    return undefined;
+  }
+}
+
+/**
+ * A profile's server among `servers`: the one with the same connection settings, else the
+ * same server whose details the provider has changed since (serverIdentity). None: it is
+ * gone, and nothing else is picked.
+ */
+export function findServer(servers: ServerProfile[], key: string | undefined): ServerProfile | undefined {
+  if (!key) return undefined;
+  const exact = servers.find((s) => serverKey(s) === key);
+  if (exact) return exact;
+  const id = identityOfKey(key);
+  return id ? servers.find((s) => serverIdentity(s) === id) : undefined;
+}
+
+/** Is `p` the server stored under `key` (see findServer)? */
+export function isSameServer(key: string | undefined, p: ServerProfile): boolean {
+  return findServer([p], key) !== undefined;
 }
 
 /** The key of a server given by its link (also one no longer in any subscription). */
